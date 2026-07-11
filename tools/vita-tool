@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+tool=$1
+shift
+
+if [ -z "$VITASDK" ]; then
+  echo "VITASDK is not set." >&2
+  exit 1
+fi
+
+exec "$VITASDK/bin/$tool" "$@"

@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+if [ -z "$VITASDK" ]; then
+  echo "VITASDK is not set." >&2
+  exit 1
+fi
+
+PKG_CONFIG_EXE=pkg-config
+if ! command -v "$PKG_CONFIG_EXE" >/dev/null 2>&1; then
+  echo "pkg-config not found in PATH." >&2
+  exit 1
+fi
+
+unset PKG_CONFIG_DIR
+unset PKG_CONFIG_PATH
+unset PKG_CONFIG_SYSROOT_DIR
+export PKG_CONFIG_LIBDIR="$VITASDK/arm-vita-eabi/lib/pkgconfig:$VITASDK/arm-vita-eabi/share/pkgconfig"
+
+exec "$PKG_CONFIG_EXE" --define-variable=VITASDK="$VITASDK" --define-prefix --static "$@"

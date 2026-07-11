@@ -1,0 +1,21 @@
+[build]
+target = "armv7-sony-vita-newlibeabihf"
+
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+AR_armv7_sony_vita_newlibeabihf = { value = "tools/vita-ar", relative = true }
+CC_armv7_sony_vita_newlibeabihf = { value = "tools/vita-gcc", relative = true }
+PKG_CONFIG_ALLOW_CROSS_armv7_sony_vita_newlibeabihf = "1"
+PKG_CONFIG_armv7_sony_vita_newlibeabihf = { value = "tools/vita-pkg-config", relative = true }
+
+[target.armv7-sony-vita-newlibeabihf]
+linker = "tools/vita-gcc"
+# `simd-adler32` (pulled in by the `png` feature of `image`, for PNG logo/cover art support)
+# picks a NEON-accelerated path on this target (Cortex-A9 has NEON) that uses ARM NEON intrinsics
+# still unstable for this target/toolchain combination, failing the build. Disabling the NEON
+# target feature makes it fall back to its portable scalar implementation instead. NOTE: as of
+# writing, `cargo-vita`'s own build wrapper doesn't forward this setting through to the actual
+# rustc invocations (plain `cargo build --target armv7-sony-vita-newlibeabihf` does honor it) -
+# when building via `cargo vita build`, export `RUSTFLAGS="-C target-feature=-neon"` in the shell
+# instead; see the README build instructions.
+rustflags = ["-C", "target-feature=-neon"]
