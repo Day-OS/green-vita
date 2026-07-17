@@ -9,6 +9,9 @@ use tokio::task::JoinHandle;
 
 pub(crate) enum AppState {
     InitializeAuthentication,
+    LanguageSelect {
+        selected: usize,
+    },
     RequestingDeviceCode(JoinHandle<Result<DeviceCodeAuth>>),
     WaitingForDeviceAuthorization {
         device_code: DeviceCodeAuth,
@@ -103,7 +106,11 @@ impl App {
                 if self.service.auth.has_saved_login() {
                     self.load_credentials();
                 } else {
-                    self.request_device_code();
+                    let selected = crate::Locale::ALL
+                        .iter()
+                        .position(|&locale| locale == self.settings.locale)
+                        .unwrap_or(0);
+                    self.set_state(AppState::LanguageSelect { selected });
                 }
             }
             AppState::RequestingDeviceCode(_)
@@ -119,7 +126,8 @@ impl App {
                 self.pump_rtc_session().await?
             }
             AppState::TitleList { .. } => self.pump_title_details().await?,
-            AppState::ModeSelect { .. }
+            AppState::LanguageSelect { .. }
+            | AppState::ModeSelect { .. }
             | AppState::ConsoleList { .. }
             | AppState::Settings { .. }
             | AppState::Error { .. } => {}

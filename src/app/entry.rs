@@ -81,10 +81,7 @@ impl App {
                 self.set_state(AppState::WaitingForDeviceAuthorization { device_code, job });
             }
             PollJob::Done(Err(error)) => {
-                self.set_error_screen(
-                    "Sign-in request failed",
-                    format!("Failed to start xCloud sign-in: {error:#}"),
-                );
+                self.set_localized_error_screen("error-sign-in-request", format!("{error:#}"));
             }
         }
     }
@@ -182,10 +179,7 @@ impl App {
                 self.set_state(AppState::TitleList { selected: 0 });
             }
             PollJob::Done(Err(error)) => {
-                self.set_error_screen(
-                    "Title request failed",
-                    format!("Failed to load cloud titles: {error:#}"),
-                );
+                self.set_localized_error_screen("error-title-request", format!("{error:#}"));
             }
         }
     }
@@ -198,10 +192,7 @@ impl App {
                 self.set_state(AppState::ConsoleList { selected: 0 });
             }
             PollJob::Done(Err(error)) => {
-                self.set_error_screen(
-                    "Console request failed",
-                    format!("Failed to load consoles: {error:#}"),
-                );
+                self.set_localized_error_screen("error-console-request", format!("{error:#}"));
             }
         }
     }

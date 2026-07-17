@@ -16,8 +16,11 @@ pub(crate) use stream_session::{StreamStartTarget, StreamingSession, describe_st
 
 use self::service::Service;
 use self::ui::header::MenuState;
+use crate::i18n::{I18n, arg_string};
 use crate::settings::Settings;
 use anyhow::Result;
+use fluent_bundle::FluentArgs;
+use std::fmt::Display;
 use std::time::Instant;
 
 pub(crate) struct TitleInitialOverlay {
@@ -64,6 +67,26 @@ impl App {
             eprintln!("{details}");
         }
         self.set_state(AppState::Error { reason, details });
+    }
+
+    fn localized_error(&self, reason_key: &'static str, error: impl Display) -> (String, String) {
+        let i18n = I18n::new(self.settings.locale);
+        let mut args = FluentArgs::new();
+        args.set("error", arg_string(error.to_string()));
+        (
+            i18n.text(reason_key),
+            i18n.text_with("error-technical-details", args),
+        )
+    }
+
+    fn set_localized_error_screen(&mut self, reason_key: &'static str, error: impl Display) {
+        let (reason, details) = self.localized_error(reason_key, error);
+        self.set_error_screen(reason, details);
+    }
+
+    fn localized_error_state(&self, reason_key: &'static str, error: impl Display) -> AppState {
+        let (reason, details) = self.localized_error(reason_key, error);
+        AppState::Error { reason, details }
     }
 
     /// The active cloud title's display name - `None` for Home streams.

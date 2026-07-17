@@ -10,6 +10,9 @@ pub fn build_ui(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) -> V
     let mut commands = Vec::new();
 
     match &app.state {
+        AppState::LanguageSelect { .. } => {
+            screens::language_select::show(ctx, app, &mut commands);
+        }
         AppState::Streaming(streaming) if streaming.paused => {
             screens::paused_overlay::show(ctx, app, &mut commands);
         }

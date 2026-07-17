@@ -74,6 +74,17 @@ pub(crate) fn show(ctx: &egui::Context, app: &App) {
                 );
             });
         }
+
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(i18n.text("token-source-warning"))
+                    .size(12.0)
+                    .color(theme.text),
+            );
+            ui.add_space(6.0);
+            ui.separator();
+        });
     });
 }
 

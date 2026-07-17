@@ -1,7 +1,8 @@
 use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
-use crate::i18n::I18n;
+use crate::i18n::{I18n, arg_string};
 use crate::{App, AppCommand, AppState, InputCommand};
+use fluent_bundle::FluentArgs;
 
 pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand>) {
     let theme = Theme::error();
@@ -17,14 +18,28 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
         }
         ui.colored_label(
             theme.text,
-            format!("Cloud host: {}", app.service.api.config.cloud.host),
+            host_text(
+                &i18n,
+                "settings-cloud-host",
+                &app.service.api.config.cloud.host,
+            ),
         );
         ui.colored_label(
             theme.text,
-            format!("Home host: {}", app.service.api.config.home.host),
+            host_text(
+                &i18n,
+                "settings-home-host",
+                &app.service.api.config.home.host,
+            ),
         );
         if ui.button(i18n.text("action-back")).clicked() {
             commands.push(InputCommand::Back.into());
         }
     });
+}
+
+fn host_text(i18n: &I18n, key: &'static str, host: &str) -> String {
+    let mut args = FluentArgs::new();
+    args.set("host", arg_string(host));
+    i18n.text_with(key, args)
 }

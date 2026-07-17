@@ -296,12 +296,7 @@ impl App {
                 }
             }
             Command::SetLocale(locale) => {
-                if self.settings.locale != locale {
-                    self.settings.locale = locale;
-                    self.service.api.config.locale = locale.as_str().to_owned();
-                    self.invalidate_catalog_for_locale_change();
-                    self.settings.save();
-                }
+                self.set_locale(locale);
                 if let AppState::Settings {
                     locale_expanded,
                     selected,
@@ -324,5 +319,16 @@ impl App {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn set_locale(&mut self, locale: Locale) {
+        if self.settings.locale == locale {
+            return;
+        }
+
+        self.settings.locale = locale;
+        self.service.api.config.locale = locale.as_str().to_owned();
+        self.invalidate_catalog_for_locale_change();
+        self.settings.save();
     }
 }

@@ -1,5 +1,5 @@
 use crate::app::ui::header;
-use crate::app::ui::screens::{paused_overlay, settings, title_list};
+use crate::app::ui::screens::{language_select, paused_overlay, settings, title_list};
 use crate::{App, AppState};
 use anyhow::Result;
 
@@ -28,6 +28,7 @@ pub enum NavigationCommand {
 
 #[derive(Clone, PartialEq)]
 pub enum ScreenCommand {
+    LanguageSelect(language_select::Command),
     PausedOverlay(paused_overlay::Command),
     Settings(settings::Command),
     TitleList(title_list::Command),
@@ -63,6 +64,12 @@ impl From<paused_overlay::Command> for AppCommand {
     }
 }
 
+impl From<language_select::Command> for AppCommand {
+    fn from(command: language_select::Command) -> Self {
+        Self::Screen(ScreenCommand::LanguageSelect(command))
+    }
+}
+
 impl From<settings::Command> for AppCommand {
     fn from(command: settings::Command) -> Self {
         Self::Screen(ScreenCommand::Settings(command))
@@ -93,6 +100,7 @@ impl App {
         }
 
         match &self.state {
+            AppState::LanguageSelect { .. } => self.handle_language_select_input(command),
             AppState::StartingStream { .. } | AppState::Connecting { .. } => {
                 self.handle_connecting_input(command).await
             }
@@ -119,6 +127,9 @@ impl App {
 
     async fn handle_screen_command(&mut self, command: ScreenCommand) -> Result<()> {
         match command {
+            ScreenCommand::LanguageSelect(command) => {
+                self.handle_language_select_command(command);
+            }
             ScreenCommand::PausedOverlay(command) => {
                 self.handle_paused_overlay_command(command).await?;
             }

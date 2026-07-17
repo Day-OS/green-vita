@@ -45,17 +45,18 @@ fn contains_case_insensitive(text: &str, query: &str) -> bool {
     text.to_lowercase().contains(&query.to_lowercase())
 }
 
-fn title_rows(app: &App, filtered: &[usize]) -> Vec<(String, Option<Arc<TitleImage>>)> {
+fn title_rows(
+    app: &App,
+    filtered: &[usize],
+    i18n: &I18n,
+) -> Vec<(String, Option<Arc<TitleImage>>)> {
     if app.service.titles.is_empty() && matches!(&app.state, AppState::LoadingTitles(_)) {
-        return vec![("Requesting /v2/titles".to_owned(), None)];
+        return vec![(i18n.text("title-requesting"), None)];
     }
     if app.service.titles.is_empty() {
         return vec![
-            (
-                "No titles returned or parsed from /v2/titles".to_owned(),
-                None,
-            ),
-            ("Use xCloud gsToken with xCloud baseUri".to_owned(), None),
+            (i18n.text("title-none-returned"), None),
+            (i18n.text("title-token-hint"), None),
         ];
     }
     filtered
@@ -155,7 +156,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                         ui.colored_label(theme.text, i18n.text("title-search-empty"));
                     });
                 } else {
-                    let rows = title_rows(app, &filtered);
+                    let rows = title_rows(app, &filtered, &i18n);
                     show_selectable_list(ui, &rows, filtered_selected, theme, commands, None);
                 }
             });

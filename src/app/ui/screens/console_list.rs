@@ -21,7 +21,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
         show_header_row(ui, app, theme, &i18n, Some(commands));
         ui.separator();
-        let rows = console_rows(app);
+        let rows = console_rows(app, &i18n);
         show_selectable_list(
             ui,
             &rows,
@@ -33,19 +33,16 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
     });
 }
 
-fn console_rows(app: &App) -> Vec<(String, Option<Arc<TitleImage>>)> {
+fn console_rows(app: &App, i18n: &I18n) -> Vec<(String, Option<Arc<TitleImage>>)> {
     if app.service.consoles.is_empty() && matches!(&app.state, AppState::LoadingConsoles(_)) {
-        return vec![("Requesting /v6/servers/home".to_owned(), None)];
+        return vec![(i18n.text("console-requesting"), None)];
     }
     if app.service.consoles.is_empty() {
         return vec![
-            ("No consoles returned by /v6/servers/home".to_owned(), None),
-            ("Check Remote Play is enabled on your Xbox".to_owned(), None),
-            ("Use xHome gsToken with xHome baseUri".to_owned(), None),
-            (
-                "Same Microsoft account must own the console".to_owned(),
-                None,
-            ),
+            (i18n.text("console-none-returned"), None),
+            (i18n.text("console-remote-play-hint"), None),
+            (i18n.text("console-token-hint"), None),
+            (i18n.text("console-account-hint"), None),
         ];
     }
     app.service

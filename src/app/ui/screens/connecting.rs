@@ -1,9 +1,10 @@
 use crate::app::AppState;
 use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
-use crate::i18n::I18n;
+use crate::i18n::{I18n, arg_string};
 use crate::{App, InputCommand, StreamKind};
 use anyhow::Result;
+use fluent_bundle::FluentArgs;
 
 pub(crate) fn show(ctx: &egui::Context, app: &App) {
     let theme = Theme::dark();
@@ -18,26 +19,31 @@ pub(crate) fn show(ctx: &egui::Context, app: &App) {
             ui.spinner();
             match &app.state {
                 AppState::StartingStream { target, .. } => {
-                    ui.colored_label(theme.text, format!("Target: {}", target.label));
-                    ui.colored_label(theme.text, "Session: preparing");
-                    ui.colored_label(theme.text, format!("Starting stream for {}", target.label));
+                    ui.colored_label(theme.text, field(&i18n, "connecting-target", &target.label));
+                    ui.colored_label(theme.text, i18n.text("connecting-session-preparing"));
+                    ui.colored_label(
+                        theme.text,
+                        field(&i18n, "connecting-starting", &target.label),
+                    );
                 }
                 AppState::Connecting { session, .. } => {
                     let wait_seconds = session.wait_estimate.map(|(total, fetched_at)| {
                         total.saturating_sub(fetched_at.elapsed().as_secs())
                     });
-                    ui.colored_label(theme.text, format!("Target: {}", session.label));
                     ui.colored_label(
                         theme.text,
-                        format!("Session: {}", session.stream.session_id),
+                        field(&i18n, "connecting-target", &session.label),
                     );
                     ui.colored_label(
                         theme.text,
-                        format!(
-                            "Status: {}",
-                            crate::app::describe_stream_state(session.stream.state, wait_seconds)
-                        ),
+                        field(&i18n, "connecting-session", &session.stream.session_id),
                     );
+                    let status = crate::app::describe_stream_state(
+                        &i18n,
+                        session.stream.state,
+                        wait_seconds,
+                    );
+                    ui.colored_label(theme.text, field(&i18n, "connecting-status", &status));
                 }
                 _ => {}
             }
@@ -45,6 +51,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &App) {
             ui.colored_label(theme.text, i18n.text("connecting-cancel"));
         });
     });
+}
+
+fn field(i18n: &I18n, key: &'static str, value: &str) -> String {
+    let mut args = FluentArgs::new();
+    args.set("value", arg_string(value));
+    i18n.text_with(key, args)
 }
 
 impl App {

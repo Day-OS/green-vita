@@ -10,11 +10,8 @@ impl App {
 
         let (closed, error) = streaming.drain_worker_events();
         if let Some(error) = error {
-            self.stop_stream_with_error(
-                "WebRTC session failed",
-                format!("WebRTC worker failed: {error}"),
-            )
-            .await;
+            self.stop_stream_with_error("error-webrtc-session", error.to_string())
+                .await;
             return Ok(());
         }
         if closed {
@@ -28,21 +25,18 @@ impl App {
         streaming.post_local_ice().await;
         streaming.poll_remote_ice().await;
         if let Some(code) = streaming.keep_alive().await {
-            self.stop_stream_with_error(
-                "Stream session ended",
-                format!("Stream session ended: {code}"),
-            )
-            .await;
+            self.stop_stream_with_error("error-stream-ended", code)
+                .await;
         }
         Ok(())
     }
 
-    async fn stop_stream_with_error(&mut self, reason: &'static str, details: String) {
+    async fn stop_stream_with_error(&mut self, reason_key: &'static str, error: String) {
         let state = std::mem::replace(&mut self.state, AppState::ModeSelect { selected: 0 });
         if let Some(streaming) = state.into_streaming() {
             let _ = streaming.stream.stop().await;
         }
-        self.set_error_screen(reason, details);
+        self.set_localized_error_screen(reason_key, error);
     }
 
     pub(in crate::app) async fn exit_stream(&mut self) {

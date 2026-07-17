@@ -1,29 +1,45 @@
 use super::StreamingSession;
 use crate::app::{App, AppState, PollJob, poll_job};
+use crate::i18n::{I18n, arg_string};
 use crate::{ApiClient, MsalAuth, Stream, StreamKind, StreamState};
 use anyhow::Result;
+use fluent_bundle::FluentArgs;
 use std::time::{Duration, Instant};
 
 const WAIT_ESTIMATE_REFRESH: Duration = Duration::from_secs(15);
 const MAX_CONSECUTIVE_POLL_FAILURES: u32 = 10;
 
-pub(crate) fn describe_stream_state(state: StreamState, wait_seconds: Option<u64>) -> String {
+pub(crate) fn describe_stream_state(
+    i18n: &I18n,
+    state: StreamState,
+    wait_seconds: Option<u64>,
+) -> String {
     match state {
-        StreamState::New => "Starting".to_owned(),
-        StreamState::Provisioning => "Provisioning your session".to_owned(),
+        StreamState::New => i18n.text("stream-state-starting"),
+        StreamState::Provisioning => i18n.text("stream-state-provisioning"),
         StreamState::WaitingForResources => match wait_seconds {
-            Some(seconds) if seconds < 60 => format!("Queued - estimated wait {seconds}s"),
-            Some(seconds) => format!(
-                "Queued - estimated wait {}m {}s",
+            Some(seconds) if seconds < 60 => {
+                stream_wait_text(i18n, "stream-state-queued-seconds", seconds, seconds)
+            }
+            Some(seconds) => stream_wait_text(
+                i18n,
+                "stream-state-queued-minutes",
                 seconds / 60,
-                seconds % 60
+                seconds % 60,
             ),
-            None => "Queued - waiting for a free server".to_owned(),
+            None => i18n.text("stream-state-queued"),
         },
-        StreamState::ReadyToConnect => "Finishing sign-in handshake".to_owned(),
-        StreamState::Provisioned => "Ready".to_owned(),
-        StreamState::Error => "Failed".to_owned(),
+        StreamState::ReadyToConnect => i18n.text("stream-state-handshake"),
+        StreamState::Provisioned => i18n.text("stream-state-ready"),
+        StreamState::Error => i18n.text("stream-state-failed"),
     }
+}
+
+fn stream_wait_text(i18n: &I18n, key: &'static str, first: u64, seconds: u64) -> String {
+    let mut args = FluentArgs::new();
+    args.set("first", arg_string(first.to_string()));
+    args.set("seconds", arg_string(seconds.to_string()));
+    i18n.text_with(key, args)
 }
 
 pub(crate) struct ConnectingStream {
@@ -124,13 +140,11 @@ impl App {
                         wait_estimate_job: None,
                     },
                     PollJob::Done(Err(error)) => {
-                        let reason = "Start stream failed".to_owned();
-                        let details = format!(
+                        eprintln!(
                             "Failed to start {:?} stream for {}: {error:#}",
                             target.kind, target.label
                         );
-                        eprintln!("ERROR: {reason}\n{details}");
-                        AppState::Error { reason, details }
+                        self.localized_error_state("error-start-stream", format!("{error:#}"))
                     }
                 },
                 None => AppState::StartingStream { target, job: None },
@@ -210,11 +224,12 @@ impl App {
                 ) {
                     Ok(streaming) => Ok(AppState::Streaming(streaming)),
                     Err(error) => {
-                        let reason = "WebRTC negotiation failed".to_owned();
-                        let details = format!("Failed to start WebRTC session: {error:#}");
                         let _ = session.stream.stop().await;
-                        eprintln!("ERROR: {reason}\n{details}");
-                        Ok(AppState::Error { reason, details })
+                        eprintln!("Failed to start WebRTC session: {error:#}");
+                        Ok(self.localized_error_state(
+                            "error-webrtc-negotiation",
+                            format!("{error:#}"),
+                        ))
                     }
                 }
             }
@@ -240,10 +255,7 @@ impl App {
                 let too_many_failures =
                     session.consecutive_failures >= MAX_CONSECUTIVE_POLL_FAILURES;
                 if session_gone || too_many_failures {
-                    let reason = "Stream state failed".to_owned();
-                    let details = format!("Stream state failed: {error:#}");
-                    eprintln!("ERROR: {reason}\n{details}");
-                    Ok(AppState::Error { reason, details })
+                    Ok(self.localized_error_state("error-stream-state", format!("{error:#}")))
                 } else {
                     Ok(AppState::Connecting {
                         session,

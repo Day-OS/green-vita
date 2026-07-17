@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 
-<livearea style="a1" format-ver="01.00" content-rev="2">
+<livearea style="a1" format-ver="01.00" content-rev="4">
     <livearea-background>
         <image>bg0.png</image>
     </livearea-background>
@@ -8,4 +8,16 @@
     <gate>
         <startup-image>startup.png</startup-image>
     </gate>
+
+    <frame id="frame3" multi="o" autoflip="0" rev="2">
+        <liveitem default="on">
+            <text align="center" valign="top" text-align="center" text-valign="top" margin-top="12">
+                <str color="#ffffff" size="32" bold="on" shadow="on">GreenVita</str>
+            </text>
+            <text align="center" valign="bottom" text-align="center" text-valign="bottom" margin-bottom="12">
+                <str color="#ffffff" size="18" bold="on" shadow="on">GitHub Source: Day-OS/green-vita</str>
+            </text>
+            <target>https://github.com/Day-OS/green-vita</target>
+        </liveitem>
+    </frame>
 </livearea>

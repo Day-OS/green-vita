@@ -1,14 +1,16 @@
 use crate::app::ui::theme::Theme;
+use crate::i18n::I18n;
 use crate::{App, AppState};
 
 pub(crate) fn show(ctx: &egui::Context, app: &App) {
     let theme = Theme::dark();
-    let message = match &app.state {
-        AppState::InitializeAuthentication => "Starting GreenVita...",
-        AppState::RequestingDeviceCode(_) => "Requesting Xbox sign-in...",
-        AppState::LoadingCredentials(_) => "Signing in to Xbox...",
+    let message_key = match &app.state {
+        AppState::InitializeAuthentication => "signing-in-starting",
+        AppState::RequestingDeviceCode(_) => "signing-in-requesting-code",
+        AppState::LoadingCredentials(_) => "signing-in-loading-credentials",
         _ => return,
     };
+    let i18n = I18n::new(app.settings.locale);
     let mut frame = egui::Frame::central_panel(&ctx.style());
     frame.fill = theme.background;
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
@@ -18,7 +20,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App) {
             ui.add(egui::Spinner::new().size(48.0));
             ui.add_space(20.0);
             ui.label(
-                egui::RichText::new(message)
+                egui::RichText::new(i18n.text(message_key))
                     .color(theme.text_bright)
                     .size(24.0),
             );

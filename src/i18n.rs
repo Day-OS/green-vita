@@ -29,6 +29,7 @@ impl I18n {
 
     pub fn screen_title(&self, state: &AppState) -> String {
         self.text(match state {
+            AppState::LanguageSelect { .. } => "screen-language-select",
             AppState::InitializeAuthentication
             | AppState::RequestingDeviceCode(_)
             | AppState::LoadingCredentials(_) => "screen-signing-in",
