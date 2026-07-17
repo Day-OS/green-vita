@@ -108,6 +108,9 @@ pub struct Settings {
 #[serde(default)]
 pub struct GameProfile {
     pub swap_shoulders_and_triggers: bool,
+    /// When enabled, front touch mirrors the rear L2/R2/L3/R3 zones instead of acting as a
+    /// clickable xCloud pointer. Defaults to pointer mode for existing profiles.
+    pub front_touch_auxiliary_buttons: bool,
 }
 
 impl Default for Settings {
@@ -130,6 +133,13 @@ impl Settings {
             .entry(title_id)
             .or_default()
             .swap_shoulders_and_triggers = enabled;
+    }
+
+    pub fn set_front_touch_auxiliary_buttons(&mut self, title_id: String, enabled: bool) {
+        self.game_profiles
+            .entry(title_id)
+            .or_default()
+            .front_touch_auxiliary_buttons = enabled;
     }
 
     /// Loads from disk, falling back to defaults on any error.

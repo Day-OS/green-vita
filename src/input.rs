@@ -119,7 +119,8 @@ pub fn back_button_held(controller: Option<&GameController>) -> bool {
 pub fn read_gamepad_frame(
     controller: Option<&GameController>,
     raw_joystick: Option<&Joystick>,
-    rear_touch: &RearTouchButtons,
+    touch_buttons: &RearTouchButtons,
+    front_touch_auxiliary_buttons: bool,
 ) -> Option<GamepadFrame> {
     let controller = controller?;
     let button = |b: Button| f32::from(controller.button(b));
@@ -139,10 +140,12 @@ pub fn read_gamepad_frame(
         left_shoulder: button(Button::LeftShoulder),
         right_shoulder: button(Button::RightShoulder),
         left_thumb: f32::from(
-            controller.button(Button::LeftStick) || rear_touch.pressed(RearTouchButton::L3),
+            controller.button(Button::LeftStick)
+                || touch_buttons.pressed(RearTouchButton::L3, front_touch_auxiliary_buttons),
         ),
         right_thumb: f32::from(
-            controller.button(Button::RightStick) || rear_touch.pressed(RearTouchButton::R3),
+            controller.button(Button::RightStick)
+                || touch_buttons.pressed(RearTouchButton::R3, front_touch_auxiliary_buttons),
         ),
         left_thumb_x_axis: axis_to_f32(controller.axis(Axis::LeftX)),
         left_thumb_y_axis: axis_to_f32(controller.axis(Axis::LeftY)),
@@ -154,7 +157,7 @@ pub fn read_gamepad_frame(
             Axis::TriggerLeft,
             4,
             12,
-            rear_touch.pressed(RearTouchButton::L2),
+            touch_buttons.pressed(RearTouchButton::L2, front_touch_auxiliary_buttons),
         ),
         right_trigger: trigger_value(
             controller,
@@ -162,7 +165,7 @@ pub fn read_gamepad_frame(
             Axis::TriggerRight,
             5,
             13,
-            rear_touch.pressed(RearTouchButton::R2),
+            touch_buttons.pressed(RearTouchButton::R2, front_touch_auxiliary_buttons),
         ),
     })
 }
@@ -213,10 +216,11 @@ pub enum RearTouchButton {
     R3,
 }
 
-/// Splits the Vita's rear panel into L2/R2 above and L3/R3 below.
+/// Tracks the Vita's rear auxiliary zones and, optionally, the same zones on front touch.
 #[derive(Default)]
 pub struct RearTouchButtons {
-    fingers: HashMap<i64, RearTouchButton>,
+    rear_fingers: HashMap<i64, RearTouchButton>,
+    front_fingers: HashMap<i64, RearTouchButton>,
 }
 
 impl RearTouchButtons {
@@ -235,28 +239,41 @@ impl RearTouchButtons {
                 x,
                 y,
                 ..
-            } if touch_id == REAR_TOUCH_DEVICE_ID => {
+            } if touch_id == REAR_TOUCH_DEVICE_ID || touch_id == FRONT_TOUCH_DEVICE_ID => {
                 let button = match (x < 0.5, y < 0.5) {
                     (true, true) => RearTouchButton::L2,
                     (false, true) => RearTouchButton::R2,
                     (true, false) => RearTouchButton::L3,
                     (false, false) => RearTouchButton::R3,
                 };
-                self.fingers.insert(finger_id, button);
+                self.fingers_mut(touch_id).insert(finger_id, button);
             }
             Event::FingerUp {
                 touch_id,
                 finger_id,
                 ..
-            } if touch_id == REAR_TOUCH_DEVICE_ID => {
-                self.fingers.remove(&finger_id);
+            } if touch_id == REAR_TOUCH_DEVICE_ID || touch_id == FRONT_TOUCH_DEVICE_ID => {
+                self.fingers_mut(touch_id).remove(&finger_id);
             }
             _ => {}
         }
     }
 
-    fn pressed(&self, button: RearTouchButton) -> bool {
-        self.fingers.values().any(|pressed| *pressed == button)
+    fn fingers_mut(&mut self, touch_id: i64) -> &mut HashMap<i64, RearTouchButton> {
+        if touch_id == FRONT_TOUCH_DEVICE_ID {
+            &mut self.front_fingers
+        } else {
+            &mut self.rear_fingers
+        }
+    }
+
+    fn pressed(&self, button: RearTouchButton, include_front: bool) -> bool {
+        self.rear_fingers.values().any(|pressed| *pressed == button)
+            || (include_front
+                && self
+                    .front_fingers
+                    .values()
+                    .any(|pressed| *pressed == button))
     }
 }
 

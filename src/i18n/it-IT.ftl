@@ -5,7 +5,7 @@ screen-cloud-titles = TITOLI CLOUD
 screen-consoles = CONSOLE
 screen-connecting = CONNESSIONE
 screen-streaming = STREAMING
-screen-paused = IN PAUSA
+screen-paused = MENU RAPIDO
 screen-settings = IMPOSTAZIONI
 screen-error = ERRORE
 
@@ -17,6 +17,7 @@ settings-home = Casa
 settings-locale = Lingua/regione
 settings-game = Impostazioni gioco
 settings-swap-shoulders-triggers = Scambia L1/L2 e R1/R2
+settings-front-touch-auxiliary-buttons = Usa il touch anteriore per L2/R2/L3/R3 invece del mouse
 settings-cloud-host = Host cloud: { $host }
 settings-home-host = Host locale: { $host }
 settings-stream-debug-info = Mostra informazioni di debug dello streaming
@@ -25,11 +26,11 @@ action-back = Indietro
 mode-select-cloud-subtitle = Giochi tramite Xbox Cloud Gaming
 mode-select-home-subtitle = Streaming dalla tua Xbox
 
-paused-resume = Riprendi
+paused-resume = Torna al gioco
 paused-xbox-button = Pulsante Xbox
 paused-exit-game = Esci dal gioco
 
-streaming-hold-back = Tieni premuto Back per mettere in pausa
+streaming-hold-back = Tieni premuto Back per aprire il menu rapido
 connecting-cancel = Premi Cerchio per annullare
 token-starting-sign-in = Avvio accesso Microsoft...
 token-at-uri = su { $uri }

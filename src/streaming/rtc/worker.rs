@@ -11,10 +11,11 @@ use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PUMP_SLEEP: Duration = Duration::from_millis(1);
 const PUMP_ERROR_SLEEP: Duration = Duration::from_millis(100);
+const GAMEPAD_PULSE_DURATION: Duration = Duration::from_millis(100);
 const MAX_PENDING_COMMANDS: usize = 16;
 const MAX_PENDING_EVENTS: usize = 32;
 const MAX_PENDING_AUDIO_BATCHES: usize = 16;
@@ -124,7 +125,6 @@ impl RtcWorker {
     pub fn send_gamepad_pulse(&self, frame: GamepadFrame) {
         if let Ok(mut pulses) = self.gamepad_pulses.lock() {
             pulses.push_back(frame);
-            pulses.push_back(GamepadFrame::default());
         }
     }
 
@@ -198,6 +198,7 @@ async fn run_session(
     let mut last_connection_state = session.connection_state;
     let mut last_server_video_size = session.server_video_size;
     let mut consecutive_pump_errors = 0u32;
+    let mut active_gamepad_pulse: Option<(GamepadFrame, Instant)> = None;
 
     loop {
         if !drain_commands(&mut session, &commands_rx) {
@@ -208,12 +209,29 @@ async fn run_session(
             .lock()
             .map(|mut pulses| pulses.drain(..).collect::<Vec<_>>())
             .unwrap_or_default();
+        let pulse_started = !pulses.is_empty();
         for frame in pulses {
-            session.send_gamepad_frame(frame);
+            active_gamepad_pulse = Some((frame, Instant::now() + GAMEPAD_PULSE_DURATION));
         }
-        if let Ok(mut latest) = latest_gamepad.lock()
-            && let Some(frame) = latest.take()
-        {
+
+        let latest = latest_gamepad
+            .lock()
+            .ok()
+            .and_then(|mut latest| latest.take());
+        if let Some((pulse, release_at)) = &active_gamepad_pulse {
+            if Instant::now() >= *release_at {
+                active_gamepad_pulse = None;
+                // A pulse must have a distinct release packet even when normal controller input
+                // is temporarily suppressed (for example, until Confirm is released).
+                session.send_gamepad_frame(latest.unwrap_or_default());
+            } else if pulse_started || latest.is_some() {
+                let mut frame = latest.unwrap_or_default();
+                // Guide/Nexus is currently the only pulsed input. Keep it asserted while normal
+                // gamepad frames continue to flow instead of immediately overwriting the press.
+                frame.nexus = frame.nexus.max(pulse.nexus);
+                session.send_gamepad_frame(frame);
+            }
+        } else if let Some(frame) = latest {
             session.send_gamepad_frame(frame);
         }
 

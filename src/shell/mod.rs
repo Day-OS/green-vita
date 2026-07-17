@@ -108,6 +108,7 @@ pub async fn run(mut app: App) -> Result<()> {
             }
             if let AppState::Streaming(streaming) = &app.state
                 && !streaming.paused
+                && !streaming.front_touch_auxiliary_buttons(&app.settings)
                 && let Some(pointer_event) = map_stream_pointer_event(
                     &event,
                     (WIDTH as f32, HEIGHT as f32),
@@ -189,17 +190,24 @@ pub async fn run(mut app: App) -> Result<()> {
         }
 
         let settings = &app.settings;
+        let front_touch_auxiliary_buttons = matches!(
+            &app.state,
+            AppState::Streaming(streaming)
+                if !streaming.paused && streaming.front_touch_auxiliary_buttons(settings)
+        );
         if let AppState::Streaming(streaming) = &mut app.state
             && !streaming.paused
-            && let Some(mut gamepad_frame) = read_gamepad_frame(
+        {
+            if let Some(mut gamepad_frame) = read_gamepad_frame(
                 controller.as_ref(),
                 raw_joystick.as_ref(),
                 &rear_touch_buttons,
-            )
-        {
-            // Back is relayed separately after the hold gesture resolves.
-            gamepad_frame.view = f32::from(relay_back_as_view);
-            streaming.send_gamepad_frame(gamepad_frame, settings);
+                front_touch_auxiliary_buttons,
+            ) {
+                // Back is relayed separately after the hold gesture resolves.
+                gamepad_frame.view = f32::from(relay_back_as_view);
+                streaming.send_gamepad_frame(gamepad_frame, settings);
+            }
         }
 
         app.tick().await?;

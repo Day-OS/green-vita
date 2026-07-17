@@ -5,7 +5,7 @@ screen-cloud-titles = クラウドタイトル
 screen-consoles = 本体
 screen-connecting = 接続中
 screen-streaming = ストリーミング
-screen-paused = 一時停止
+screen-paused = クイックメニュー
 screen-settings = 設定
 screen-error = エラー
 
@@ -17,6 +17,7 @@ settings-home = ホーム
 settings-locale = 言語/地域
 settings-game = ゲーム設定
 settings-swap-shoulders-triggers = L1/L2 と R1/R2 を入れ替え
+settings-front-touch-auxiliary-buttons = 前面タッチをマウスではなくL2/R2/L3/R3に使用
 settings-cloud-host = クラウドホスト: { $host }
 settings-home-host = ホームホスト: { $host }
 settings-stream-debug-info = ストリーミングのデバッグ情報を表示
@@ -25,11 +26,11 @@ action-back = 戻る
 mode-select-cloud-subtitle = Xbox Cloud Gaming でゲームをプレイ
 mode-select-home-subtitle = 自宅の Xbox からストリーミング
 
-paused-resume = 再開
+paused-resume = ゲームに戻る
 paused-xbox-button = Xbox ボタン
 paused-exit-game = ゲームを終了
 
-streaming-hold-back = Back を長押しして一時停止
+streaming-hold-back = Back を長押ししてクイックメニューを開く
 connecting-cancel = キャンセルするには○を押してください
 token-starting-sign-in = Microsoft サインインを開始しています...
 token-at-uri = { $uri }

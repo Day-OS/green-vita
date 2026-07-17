@@ -8,12 +8,14 @@ use anyhow::Result;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Resume,
+    Settings,
     PressGuideButton,
     ExitGame,
 }
 
-pub const MENU_ITEMS: [Command; 3] = [
+pub const MENU_ITEMS: [Command; 4] = [
     Command::Resume,
+    Command::Settings,
     Command::PressGuideButton,
     Command::ExitGame,
 ];
@@ -22,6 +24,7 @@ impl Command {
     fn icon(self) -> &'static str {
         match self {
             Self::Resume => "\u{25b6}",
+            Self::Settings => "\u{2699}",
             Self::PressGuideButton => "\u{2302}",
             Self::ExitGame => "\u{2715}",
         }
@@ -30,6 +33,7 @@ impl Command {
     fn label_key(self) -> &'static str {
         match self {
             Self::Resume => "paused-resume",
+            Self::Settings => "menu-settings",
             Self::PressGuideButton => "paused-xbox-button",
             Self::ExitGame => "paused-exit-game",
         }
@@ -122,6 +126,9 @@ impl App {
                     streaming.set_paused(false);
                 }
                 self.menu.open = false;
+            }
+            Command::Settings => {
+                self.open_settings();
             }
             Command::PressGuideButton => {
                 if let Some(streaming) = self.state.streaming_mut() {

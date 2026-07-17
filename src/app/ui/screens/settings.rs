@@ -13,6 +13,7 @@ pub enum Command {
     ToggleLocaleExpanded,
     SetLocale(Locale),
     SetSwapShouldersAndTriggers { title_id: String, enabled: bool },
+    SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
     SetShowStreamDebugInfo(bool),
 }
 
@@ -21,6 +22,7 @@ enum SettingsRow {
     LocaleToggle,
     LocaleOption(Locale),
     GameSwap { title_id: String, enabled: bool },
+    GameFrontTouchAuxiliary { title_id: String, enabled: bool },
     StreamDebug(bool),
     Back,
 }
@@ -44,7 +46,15 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
             .settings
             .game_profile(&title_id)
             .is_some_and(|profile| profile.swap_shoulders_and_triggers);
-        rows.push(SettingsRow::GameSwap { title_id, enabled });
+        rows.push(SettingsRow::GameSwap {
+            title_id: title_id.clone(),
+            enabled,
+        });
+        let enabled = app
+            .settings
+            .game_profile(&title_id)
+            .is_some_and(|profile| profile.front_touch_auxiliary_buttons);
+        rows.push(SettingsRow::GameFrontTouchAuxiliary { title_id, enabled });
     }
     rows.push(SettingsRow::StreamDebug(
         app.settings.show_stream_debug_info,
@@ -129,8 +139,28 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     ) {
                         commands.push(
                             Command::SetSwapShouldersAndTriggers {
-                                title_id,
+                                title_id: title_id.clone(),
                                 enabled: !swap_shoulders_and_triggers,
+                            }
+                            .into(),
+                        );
+                    }
+                    row_index += 1;
+
+                    let front_touch_auxiliary_buttons = app
+                        .settings
+                        .game_profile(&title_id)
+                        .is_some_and(|profile| profile.front_touch_auxiliary_buttons);
+                    if checkbox_row(
+                        ui,
+                        selected_index == row_index,
+                        front_touch_auxiliary_buttons,
+                        i18n.text("settings-front-touch-auxiliary-buttons"),
+                    ) {
+                        commands.push(
+                            Command::SetFrontTouchAuxiliaryButtons {
+                                title_id,
+                                enabled: !front_touch_auxiliary_buttons,
                             }
                             .into(),
                         );
@@ -247,6 +277,12 @@ impl App {
                     enabled: !enabled,
                 });
             }
+            SettingsRow::GameFrontTouchAuxiliary { title_id, enabled } => {
+                return self.handle_settings_command(Command::SetFrontTouchAuxiliaryButtons {
+                    title_id: title_id.clone(),
+                    enabled: !enabled,
+                });
+            }
             SettingsRow::StreamDebug(enabled) => {
                 return self.handle_settings_command(Command::SetShowStreamDebugInfo(!enabled));
             }
@@ -310,6 +346,11 @@ impl App {
             Command::SetSwapShouldersAndTriggers { title_id, enabled } => {
                 self.settings
                     .set_swap_shoulders_and_triggers(title_id, enabled);
+                self.settings.save();
+            }
+            Command::SetFrontTouchAuxiliaryButtons { title_id, enabled } => {
+                self.settings
+                    .set_front_touch_auxiliary_buttons(title_id, enabled);
                 self.settings.save();
             }
             Command::SetShowStreamDebugInfo(enabled) => {

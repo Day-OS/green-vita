@@ -5,7 +5,7 @@ screen-cloud-titles = 雲端遊戲
 screen-consoles = 主機
 screen-connecting = 正在連線
 screen-streaming = 串流
-screen-paused = 已暫停
+screen-paused = 快速選單
 screen-settings = 設定
 screen-error = 錯誤
 
@@ -17,6 +17,7 @@ settings-home = 家用主機
 settings-locale = 語言/地區
 settings-game = 遊戲設定
 settings-swap-shoulders-triggers = 交換 L1/L2 和 R1/R2
+settings-front-touch-auxiliary-buttons = 將前觸控螢幕用於 L2/R2/L3/R3，而非滑鼠
 settings-cloud-host = 雲端主機: { $host }
 settings-home-host = 本地主機: { $host }
 settings-stream-debug-info = 顯示串流偵錯資訊
@@ -25,11 +26,11 @@ action-back = 返回
 mode-select-cloud-subtitle = 透過 Xbox Cloud Gaming 暢玩
 mode-select-home-subtitle = 從你自己的 Xbox 主機串流
 
-paused-resume = 繼續
+paused-resume = 返回遊戲
 paused-xbox-button = Xbox 按鈕
 paused-exit-game = 離開遊戲
 
-streaming-hold-back = 按住 Back 暫停
+streaming-hold-back = 按住 Back 開啟快速選單
 connecting-cancel = 按圓圈取消
 token-starting-sign-in = 正在啟動 Microsoft 登入...
 token-at-uri = 於 { $uri }

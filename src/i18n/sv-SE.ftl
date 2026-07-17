@@ -5,7 +5,7 @@ screen-cloud-titles = MOLNTITLAR
 screen-consoles = KONSOLER
 screen-connecting = ANSLUTER
 screen-streaming = STRÖMMAR
-screen-paused = PAUSAD
+screen-paused = SNABBMENY
 screen-settings = INSTÄLLNINGAR
 screen-error = FEL
 
@@ -17,6 +17,7 @@ settings-home = Hem
 settings-locale = Språk/region
 settings-game = Spelinställningar
 settings-swap-shoulders-triggers = Byt L1/L2 och R1/R2
+settings-front-touch-auxiliary-buttons = Använd främre pekskärmen för L2/R2/L3/R3 i stället för mus
 settings-cloud-host = Molnvärd: { $host }
 settings-home-host = Hemvärd: { $host }
 settings-stream-debug-info = Visa felsökningsinfo för strömning
@@ -25,11 +26,11 @@ action-back = Tillbaka
 mode-select-cloud-subtitle = Spel via Xbox Cloud Gaming
 mode-select-home-subtitle = Strömma från din egen Xbox
 
-paused-resume = Fortsätt
+paused-resume = Tillbaka till spelet
 paused-xbox-button = Xbox-knapp
 paused-exit-game = Avsluta spel
 
-streaming-hold-back = Håll Back för att pausa
+streaming-hold-back = Håll Back för att öppna snabbmenyn
 connecting-cancel = Tryck på Cirkel för att avbryta
 token-starting-sign-in = Startar Microsoft-inloggning...
 token-at-uri = på { $uri }

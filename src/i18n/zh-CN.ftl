@@ -5,7 +5,7 @@ screen-cloud-titles = 云游戏
 screen-consoles = 主机
 screen-connecting = 正在连接
 screen-streaming = 串流
-screen-paused = 已暂停
+screen-paused = 快捷菜单
 screen-settings = 设置
 screen-error = 错误
 
@@ -17,6 +17,7 @@ settings-home = 家用主机
 settings-locale = 语言/区域
 settings-game = 游戏设置
 settings-swap-shoulders-triggers = 交换 L1/L2 和 R1/R2
+settings-front-touch-auxiliary-buttons = 将前触屏用于 L2/R2/L3/R3，而非鼠标
 settings-cloud-host = 云端主机: { $host }
 settings-home-host = 本地主机: { $host }
 settings-stream-debug-info = 显示串流调试信息
@@ -25,11 +26,11 @@ action-back = 返回
 mode-select-cloud-subtitle = 通过 Xbox Cloud Gaming 畅玩
 mode-select-home-subtitle = 从你自己的 Xbox 主机串流
 
-paused-resume = 继续
+paused-resume = 返回游戏
 paused-xbox-button = Xbox 按钮
 paused-exit-game = 退出游戏
 
-streaming-hold-back = 按住 Back 暂停
+streaming-hold-back = 按住 Back 打开快捷菜单
 connecting-cancel = 按圆圈取消
 token-starting-sign-in = 正在启动 Microsoft 登录...
 token-at-uri = 在 { $uri }
