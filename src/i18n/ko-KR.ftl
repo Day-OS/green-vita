@@ -24,7 +24,7 @@ settings-stream-debug-info = 스트리밍 디버그 정보 표시
 action-back = 뒤로
 
 mode-select-cloud-subtitle = Xbox 클라우드 게이밍으로 플레이
-mode-select-home-subtitle = 내 Xbox에서 스트리밍
+mode-select-home-subtitle = 아직 구현되지 않았습니다. 당분간 xVita를 사용하세요
 
 paused-resume = 게임으로 돌아가기
 paused-xbox-button = Xbox 버튼

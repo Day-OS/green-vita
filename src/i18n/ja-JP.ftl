@@ -24,7 +24,7 @@ settings-stream-debug-info = ストリーミングのデバッグ情報を表示
 action-back = 戻る
 
 mode-select-cloud-subtitle = Xbox Cloud Gaming でゲームをプレイ
-mode-select-home-subtitle = 自宅の Xbox からストリーミング
+mode-select-home-subtitle = 未実装です。当面は xVita を使用してください
 
 paused-resume = ゲームに戻る
 paused-xbox-button = Xbox ボタン

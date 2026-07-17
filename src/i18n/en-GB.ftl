@@ -24,7 +24,7 @@ settings-stream-debug-info = Show streaming debug info
 action-back = Back
 
 mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles
-mode-select-home-subtitle = Stream from your own Xbox console
+mode-select-home-subtitle = Not implemented yet — use xVita for now
 
 paused-resume = Return to game
 paused-xbox-button = Xbox button

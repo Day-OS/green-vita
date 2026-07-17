@@ -24,7 +24,7 @@ settings-stream-debug-info = Pokaż informacje debugowania strumieniowania
 action-back = Wstecz
 
 mode-select-cloud-subtitle = Gry przez Xbox Cloud Gaming
-mode-select-home-subtitle = Strumieniowanie z własnej konsoli Xbox
+mode-select-home-subtitle = Jeszcze nie zaimplementowano — na razie użyj xVita
 
 paused-resume = Wróć do gry
 paused-xbox-button = Przycisk Xbox

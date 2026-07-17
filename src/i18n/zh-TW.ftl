@@ -24,7 +24,7 @@ settings-stream-debug-info = 顯示串流偵錯資訊
 action-back = 返回
 
 mode-select-cloud-subtitle = 透過 Xbox Cloud Gaming 暢玩
-mode-select-home-subtitle = 從你自己的 Xbox 主機串流
+mode-select-home-subtitle = 尚未實作 — 暫時請使用 xVita
 
 paused-resume = 返回遊戲
 paused-xbox-button = Xbox 按鈕
