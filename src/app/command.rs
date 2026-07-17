@@ -15,6 +15,8 @@ pub enum AppCommand {
 pub enum InputCommand {
     MoveUp,
     MoveDown,
+    MoveLeft,
+    MoveRight,
     Confirm,
     Back,
 }

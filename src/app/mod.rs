@@ -18,12 +18,19 @@ use self::service::Service;
 use self::ui::header::MenuState;
 use crate::settings::Settings;
 use anyhow::Result;
+use std::time::Instant;
+
+pub(crate) struct TitleInitialOverlay {
+    pub(crate) label: String,
+    pub(crate) shown_at: Instant,
+}
 
 pub struct App {
     pub settings: Settings,
     pub(crate) service: Service,
     pub(crate) state: AppState,
     pub(crate) menu: MenuState,
+    pub(crate) title_initial_overlay: Option<TitleInitialOverlay>,
 }
 
 impl App {
@@ -35,6 +42,7 @@ impl App {
             service,
             state: AppState::InitializeAuthentication,
             menu: MenuState::default(),
+            title_initial_overlay: None,
             settings,
         })
     }

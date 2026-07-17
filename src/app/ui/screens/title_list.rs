@@ -2,11 +2,14 @@ use crate::app::command::{move_next, move_prev};
 use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::{draw_title_image, draw_title_image_cover, show_selectable_list};
-use crate::app::{AppState, StreamStartTarget, TitleImage};
+use crate::app::{AppState, StreamStartTarget, TitleImage, TitleInitialOverlay};
 use crate::i18n::I18n;
 use crate::{App, AppCommand, InputCommand, StreamKind};
 use anyhow::Result;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const INITIAL_OVERLAY_DURATION: Duration = Duration::from_millis(800);
 
 fn title_rows(app: &App) -> Vec<(String, Option<Arc<TitleImage>>)> {
     if app.service.titles.is_empty() && matches!(&app.state, AppState::LoadingTitles(_)) {
@@ -234,6 +237,87 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     });
             });
     });
+    draw_initial_overlay(ctx, app);
+}
+
+fn draw_initial_overlay(ctx: &egui::Context, app: &App) {
+    let Some(overlay) = &app.title_initial_overlay else {
+        return;
+    };
+    let elapsed = overlay.shown_at.elapsed();
+    if elapsed >= INITIAL_OVERLAY_DURATION {
+        return;
+    }
+
+    ctx.request_repaint_after(INITIAL_OVERLAY_DURATION.saturating_sub(elapsed));
+    let fade = if elapsed < Duration::from_millis(550) {
+        1.0
+    } else {
+        1.0 - (elapsed - Duration::from_millis(550)).as_secs_f32() / 0.25
+    };
+    let alpha = (220.0 * fade.clamp(0.0, 1.0)).round() as u8;
+    let screen = ctx.screen_rect();
+    let rect = egui::Rect::from_center_size(screen.center(), egui::vec2(104.0, 104.0));
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("title_initial_overlay"),
+    ));
+    painter.rect_filled(
+        rect,
+        14.0,
+        egui::Color32::from_rgba_unmultiplied(20, 21, 24, alpha),
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        &overlay.label,
+        egui::FontId::proportional(56.0),
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha),
+    );
+}
+
+fn title_initial(title_id: &str) -> String {
+    match title_id
+        .chars()
+        .find(|character| character.is_alphanumeric())
+    {
+        Some(character) if character.is_alphabetic() => character.to_uppercase().collect(),
+        Some(_) | None => "#".to_owned(),
+    }
+}
+
+fn initial_groups(app: &App) -> Vec<(usize, String)> {
+    let mut groups = Vec::new();
+    for (index, title) in app.service.titles.iter().enumerate() {
+        let initial = title_initial(&title.title_id);
+        if groups
+            .last()
+            .is_none_or(|(_, previous): &(usize, String)| *previous != initial)
+        {
+            groups.push((index, initial));
+        }
+    }
+    groups
+}
+
+fn adjacent_initial_group(
+    groups: &[(usize, String)],
+    selected: usize,
+    move_right: bool,
+) -> Option<(usize, String)> {
+    if groups.is_empty() {
+        return None;
+    }
+    let current_group = groups
+        .iter()
+        .rposition(|(start, _)| *start <= selected)
+        .unwrap_or(0);
+    let target_group = if move_right {
+        (current_group + 1) % groups.len()
+    } else {
+        current_group.checked_sub(1).unwrap_or(groups.len() - 1)
+    };
+    groups.get(target_group).cloned()
 }
 
 #[derive(Clone)]
@@ -365,6 +449,24 @@ impl App {
             InputCommand::MoveDown => {
                 if let AppState::TitleList { selected } = &mut self.state {
                     *selected = move_next(*selected, item_count);
+                }
+            }
+            InputCommand::MoveLeft | InputCommand::MoveRight => {
+                let selected = match &self.state {
+                    AppState::TitleList { selected } => *selected,
+                    _ => return Ok(()),
+                };
+                let groups = initial_groups(self);
+                if let Some((target, label)) =
+                    adjacent_initial_group(&groups, selected, command == InputCommand::MoveRight)
+                {
+                    if let AppState::TitleList { selected } = &mut self.state {
+                        *selected = target;
+                    }
+                    self.title_initial_overlay = Some(TitleInitialOverlay {
+                        label,
+                        shown_at: Instant::now(),
+                    });
                 }
             }
             InputCommand::Confirm => {

@@ -105,6 +105,7 @@ impl App {
         match command {
             InputCommand::MoveUp => *selected = move_prev(*selected, OPTION_COUNT),
             InputCommand::MoveDown => *selected = move_next(*selected, OPTION_COUNT),
+            InputCommand::MoveLeft | InputCommand::MoveRight => {}
             InputCommand::Confirm => {
                 let kind = OPTIONS[*selected];
                 self.choose_stream_kind(kind)?;

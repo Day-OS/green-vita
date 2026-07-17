@@ -77,7 +77,11 @@ impl App {
                     state => self.state = state,
                 }
             }
-            InputCommand::MoveUp | InputCommand::MoveDown | InputCommand::Confirm => {}
+            InputCommand::MoveUp
+            | InputCommand::MoveDown
+            | InputCommand::MoveLeft
+            | InputCommand::MoveRight
+            | InputCommand::Confirm => {}
         }
 
         Ok(())

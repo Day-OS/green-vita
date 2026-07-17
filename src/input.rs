@@ -21,6 +21,8 @@ pub fn map_keyboard_event(event: &Event) -> Option<AppCommand> {
         Keycode::Return => InputCommand::Confirm,
         Keycode::Up => InputCommand::MoveUp,
         Keycode::Down => InputCommand::MoveDown,
+        Keycode::Left => InputCommand::MoveLeft,
+        Keycode::Right => InputCommand::MoveRight,
         _ => return None,
     };
     Some(command.into())
@@ -48,10 +50,26 @@ pub fn held_menu_direction(controller: Option<&GameController>) -> Option<InputC
     if controller.button(Button::DPadDown) {
         return Some(InputCommand::MoveDown);
     }
-    match axis_to_f32(controller.axis(Axis::LeftY)) {
-        y if y <= -MENU_STICK_DEADZONE => Some(InputCommand::MoveUp),
-        y if y >= MENU_STICK_DEADZONE => Some(InputCommand::MoveDown),
-        _ => None,
+    if controller.button(Button::DPadLeft) {
+        return Some(InputCommand::MoveLeft);
+    }
+    if controller.button(Button::DPadRight) {
+        return Some(InputCommand::MoveRight);
+    }
+    let x = axis_to_f32(controller.axis(Axis::LeftX));
+    let y = axis_to_f32(controller.axis(Axis::LeftY));
+    if y.abs() >= x.abs() {
+        match y {
+            y if y <= -MENU_STICK_DEADZONE => Some(InputCommand::MoveUp),
+            y if y >= MENU_STICK_DEADZONE => Some(InputCommand::MoveDown),
+            _ => None,
+        }
+    } else {
+        match x {
+            x if x <= -MENU_STICK_DEADZONE => Some(InputCommand::MoveLeft),
+            x if x >= MENU_STICK_DEADZONE => Some(InputCommand::MoveRight),
+            _ => None,
+        }
     }
 }
 

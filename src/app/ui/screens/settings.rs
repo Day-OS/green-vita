@@ -216,6 +216,7 @@ impl App {
                     *selected = move_next(*selected, rows.len());
                 }
             }
+            InputCommand::MoveLeft | InputCommand::MoveRight => {}
             InputCommand::Confirm => self.confirm_settings_row(&rows)?,
             InputCommand::Back => self.leave_settings(),
         }

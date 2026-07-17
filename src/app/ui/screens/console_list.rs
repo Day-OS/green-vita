@@ -77,6 +77,7 @@ impl App {
                     *selected = move_next(*selected, item_count);
                 }
             }
+            InputCommand::MoveLeft | InputCommand::MoveRight => {}
             InputCommand::Confirm => self.start_selected_console_stream(),
             InputCommand::Back => {
                 self.set_state(AppState::ModeSelect { selected: 1 });

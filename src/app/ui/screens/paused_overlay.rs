@@ -99,6 +99,7 @@ impl App {
                         crate::app::command::move_next(selected, MENU_ITEMS.len());
                 }
             }
+            InputCommand::MoveLeft | InputCommand::MoveRight => {}
             InputCommand::Confirm => {
                 let command = MENU_ITEMS
                     .get(selected)
