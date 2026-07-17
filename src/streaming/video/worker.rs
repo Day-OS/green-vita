@@ -2,14 +2,13 @@ use super::decoder::HwVideoDecoder;
 use super::metrics;
 use super::{DecodedFrame, DecoderConfig};
 use anyhow::{Context, Result};
-use crossbeam_channel::{Receiver, SendTimeoutError, Sender, bounded, select_biased, unbounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, unbounded};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const MAX_PENDING_ACCESS_UNITS: usize = 4;
-const QUEUE_SPACE_WAIT: Duration = Duration::from_millis(24);
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
@@ -83,16 +82,13 @@ impl VideoDecodeWorker {
             queued_at: Instant::now(),
             generation: self.generation.load(Ordering::Acquire),
         };
-        match self
-            .access_units
-            .send_timeout(access_unit, QUEUE_SPACE_WAIT)
-        {
+        match self.access_units.try_send(access_unit) {
             Ok(()) => true,
-            Err(SendTimeoutError::Timeout(_)) => {
+            Err(TrySendError::Full(_)) => {
                 metrics::record_queue_full();
                 false
             }
-            Err(SendTimeoutError::Disconnected(_)) => false,
+            Err(TrySendError::Disconnected(_)) => false,
         }
     }
 
