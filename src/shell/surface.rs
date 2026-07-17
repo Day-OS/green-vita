@@ -54,6 +54,10 @@ impl VitaSurface {
         Self::fit_rect(self.video_width, self.video_height, WIDTH, HEIGHT)
     }
 
+    pub fn window(&self) -> &Window {
+        self.canvas.window()
+    }
+
     pub fn upload_video_frame(&mut self, streaming: Option<&StreamingSession>) -> Result<()> {
         let Some((frame_id, frame)) = streaming.and_then(StreamingSession::video_frame) else {
             return Ok(());

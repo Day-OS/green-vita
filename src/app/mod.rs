@@ -31,6 +31,8 @@ pub struct App {
     pub(crate) state: AppState,
     pub(crate) menu: MenuState,
     pub(crate) title_initial_overlay: Option<TitleInitialOverlay>,
+    pub(crate) title_search_query: String,
+    pub(crate) title_search_requested: bool,
 }
 
 impl App {
@@ -43,6 +45,8 @@ impl App {
             state: AppState::InitializeAuthentication,
             menu: MenuState::default(),
             title_initial_overlay: None,
+            title_search_query: String::new(),
+            title_search_requested: false,
             settings,
         })
     }

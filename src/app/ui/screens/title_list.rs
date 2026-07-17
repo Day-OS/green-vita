@@ -11,7 +11,41 @@ use std::time::{Duration, Instant};
 
 const INITIAL_OVERLAY_DURATION: Duration = Duration::from_millis(800);
 
-fn title_rows(app: &App) -> Vec<(String, Option<Arc<TitleImage>>)> {
+#[derive(Clone, PartialEq)]
+pub enum Command {
+    OpenSearch,
+    SetSearch(String),
+}
+
+fn filtered_title_indices(app: &App) -> Vec<usize> {
+    let query = app.title_search_query.trim();
+    app.service
+        .titles
+        .iter()
+        .enumerate()
+        .filter_map(|(index, title)| {
+            (query.is_empty()
+                || contains_case_insensitive(title.display_name(), query)
+                || contains_case_insensitive(&title.title_id, query))
+            .then_some(index)
+        })
+        .collect()
+}
+
+fn contains_case_insensitive(text: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    if query.is_ascii() {
+        return text
+            .as_bytes()
+            .windows(query.len())
+            .any(|window| window.eq_ignore_ascii_case(query.as_bytes()));
+    }
+    text.to_lowercase().contains(&query.to_lowercase())
+}
+
+fn title_rows(app: &App, filtered: &[usize]) -> Vec<(String, Option<Arc<TitleImage>>)> {
     if app.service.titles.is_empty() && matches!(&app.state, AppState::LoadingTitles(_)) {
         return vec![("Requesting /v2/titles".to_owned(), None)];
     }
@@ -24,9 +58,9 @@ fn title_rows(app: &App) -> Vec<(String, Option<Arc<TitleImage>>)> {
             ("Use xCloud gsToken with xCloud baseUri".to_owned(), None),
         ];
     }
-    app.service
-        .titles
+    filtered
         .iter()
+        .filter_map(|index| app.service.titles.get(*index))
         .map(|title| (title.display_name().to_owned(), title.icon.clone()))
         .collect()
 }
@@ -40,6 +74,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
     };
     let theme = Theme::dark();
     let i18n = I18n::new(app.settings.locale);
+    let filtered = filtered_title_indices(app);
+    let filtered_selected = filtered
+        .iter()
+        .position(|index| *index == selected)
+        .unwrap_or(0);
     let mut frame = egui::Frame::central_panel(&ctx.style());
     frame.fill = egui::Color32::TRANSPARENT;
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
@@ -77,8 +116,48 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
             .exact_width(list_width)
             .frame(list_frame)
             .show_inside(ui, |ui| {
-                let rows = title_rows(app);
-                show_selectable_list(ui, &rows, selected, theme, commands, None);
+                ui.horizontal(|ui| {
+                    const SEARCH_HEIGHT: f32 = 32.0;
+                    const CLEAR_WIDTH: f32 = 32.0;
+                    let label = if app.title_search_query.is_empty() {
+                        i18n.text("title-search")
+                    } else {
+                        app.title_search_query.clone()
+                    };
+                    let search = egui::Button::new(egui::RichText::new(label).color(
+                        if app.title_search_query.is_empty() {
+                            theme.text
+                        } else {
+                            theme.text_bright
+                        },
+                    ));
+                    let search_width =
+                        (ui.available_width() - CLEAR_WIDTH - ui.spacing().item_spacing.x).max(0.0);
+                    if ui
+                        .add_sized(egui::vec2(search_width, SEARCH_HEIGHT), search)
+                        .clicked()
+                    {
+                        commands.push(Command::OpenSearch.into());
+                    }
+                    let clear = ui.add_enabled(
+                        !app.title_search_query.is_empty(),
+                        egui::Button::new(egui::RichText::new("×").size(20.0))
+                            .min_size(egui::vec2(CLEAR_WIDTH, SEARCH_HEIGHT)),
+                    );
+                    if clear.clicked() {
+                        commands.push(Command::SetSearch(String::new()).into());
+                    }
+                });
+                ui.add_space(4.0);
+
+                if filtered.is_empty() && !app.service.titles.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.colored_label(theme.text, i18n.text("title-search-empty"));
+                    });
+                } else {
+                    let rows = title_rows(app, &filtered);
+                    show_selectable_list(ui, &rows, filtered_selected, theme, commands, None);
+                }
             });
 
         egui::Frame::NONE
@@ -89,7 +168,10 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 bottom: 0,
             })
             .show(ui, |ui| {
-                let title = app.highlighted_title();
+                let title = filtered
+                    .contains(&selected)
+                    .then(|| app.highlighted_title())
+                    .flatten();
                 let Some(title) = title else {
                     if matches!(&app.state, AppState::LoadingTitles(_)) {
                         ui.horizontal(|ui| {
@@ -286,15 +368,18 @@ fn title_initial(title_id: &str) -> String {
     }
 }
 
-fn initial_groups(app: &App) -> Vec<(usize, String)> {
+fn initial_groups(app: &App, filtered: &[usize]) -> Vec<(usize, String)> {
     let mut groups = Vec::new();
-    for (index, title) in app.service.titles.iter().enumerate() {
+    for (filtered_index, index) in filtered.iter().copied().enumerate() {
+        let Some(title) = app.service.titles.get(index) else {
+            continue;
+        };
         let initial = title_initial(&title.title_id);
         if groups
             .last()
             .is_none_or(|(_, previous): &(usize, String)| *previous != initial)
         {
-            groups.push((index, initial));
+            groups.push((filtered_index, initial));
         }
     }
     groups
@@ -439,29 +524,39 @@ pub(crate) fn draw_title_background(ui: &mut egui::Ui, app: &App, theme: Theme) 
 
 impl App {
     pub(crate) async fn handle_title_list_input(&mut self, command: InputCommand) -> Result<()> {
-        let item_count = self.service.titles.len();
+        let filtered = filtered_title_indices(self);
+        let current = match &self.state {
+            AppState::TitleList { selected } => filtered.iter().position(|index| index == selected),
+            _ => None,
+        };
         match command {
             InputCommand::MoveUp => {
-                if let AppState::TitleList { selected } = &mut self.state {
-                    *selected = move_prev(*selected, item_count);
+                if let Some(current) = current
+                    && let Some(target) = filtered.get(move_prev(current, filtered.len()))
+                    && let AppState::TitleList { selected } = &mut self.state
+                {
+                    *selected = *target;
                 }
             }
             InputCommand::MoveDown => {
-                if let AppState::TitleList { selected } = &mut self.state {
-                    *selected = move_next(*selected, item_count);
+                if let Some(current) = current
+                    && let Some(target) = filtered.get(move_next(current, filtered.len()))
+                    && let AppState::TitleList { selected } = &mut self.state
+                {
+                    *selected = *target;
                 }
             }
             InputCommand::MoveLeft | InputCommand::MoveRight => {
-                let selected = match &self.state {
-                    AppState::TitleList { selected } => *selected,
-                    _ => return Ok(()),
+                let Some(current) = current else {
+                    return Ok(());
                 };
-                let groups = initial_groups(self);
-                if let Some((target, label)) =
-                    adjacent_initial_group(&groups, selected, command == InputCommand::MoveRight)
+                let groups = initial_groups(self, &filtered);
+                if let Some((target_position, label)) =
+                    adjacent_initial_group(&groups, current, command == InputCommand::MoveRight)
+                    && let Some(target) = filtered.get(target_position)
                 {
                     if let AppState::TitleList { selected } = &mut self.state {
-                        *selected = target;
+                        *selected = *target;
                     }
                     self.title_initial_overlay = Some(TitleInitialOverlay {
                         label,
@@ -474,6 +569,9 @@ impl App {
                     return Ok(());
                 };
                 let selected = *selected;
+                if !filtered.contains(&selected) {
+                    return Ok(());
+                }
                 let Some(title) = self.service.titles.get(selected).cloned() else {
                     return Ok(());
                 };
@@ -491,5 +589,36 @@ impl App {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn handle_title_list_command(&mut self, command: Command) -> Result<()> {
+        match command {
+            Command::OpenSearch => self.title_search_requested = true,
+            Command::SetSearch(query) => self.set_title_search_query(query),
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_title_search_query(&mut self, query: String) {
+        self.title_search_query = query;
+        let filtered = filtered_title_indices(self);
+        if let Some(first) = filtered.first()
+            && let AppState::TitleList { selected } = &mut self.state
+            && !filtered.contains(selected)
+        {
+            *selected = *first;
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::contains_case_insensitive;
+
+    #[test]
+    fn search_is_case_insensitive_and_matches_substrings() {
+        assert!(contains_case_insensitive("Forza Horizon 5", "HORIZON"));
+        assert!(contains_case_insensitive("Été", "été"));
+        assert!(!contains_case_insensitive("Halo Infinite", "Forza"));
     }
 }

@@ -38,4 +38,5 @@ title-loading = タイトルを読み込み中...
 title-select-details = 詳細を見るタイトルを選択してください
 title-play = ▶ プレイ
 title-no-description = 説明はありません
-
+title-search = ゲームを検索...
+title-search-empty = ゲームが見つかりません

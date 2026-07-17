@@ -38,4 +38,5 @@ title-loading = 타이틀 불러오는 중...
 title-select-details = 자세히 볼 타이틀을 선택하세요
 title-play = ▶ 플레이
 title-no-description = 설명이 없습니다
-
+title-search = 게임 검색...
+title-search-empty = 게임을 찾을 수 없습니다

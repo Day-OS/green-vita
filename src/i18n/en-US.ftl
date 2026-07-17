@@ -38,4 +38,5 @@ title-loading = Loading titles...
 title-select-details = Select a title to see details
 title-play = ▶ PLAY
 title-no-description = No description available
-
+title-search = Search games...
+title-search-empty = No games found

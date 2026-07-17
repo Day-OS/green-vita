@@ -52,21 +52,48 @@ pub async fn run(mut app: App) -> Result<()> {
     let mut held_direction: Option<InputCommand> = None;
     let mut held_direction_since = Instant::now();
     let mut last_direction_repeat_at = Instant::now();
+    let mut vita_ime_active = false;
+    let mut vita_ime_pending = None;
 
     loop {
         let loop_started_at = Instant::now();
         let mut egui_events = Vec::new();
         let mut direct_commands = Vec::new();
+        if app.title_search_requested && !vita_ime_active {
+            app.title_search_requested = false;
+            vita_ime_pending = None;
+            video.text_input().start();
+            vita_ime_active = true;
+        }
 
         for event in event_pump.poll_iter() {
             rear_touch_buttons.handle_event(&event);
+            let ime_owned_event = vita_ime_active;
+            if ime_owned_event {
+                match &event {
+                    Event::TextInput { text, .. } => vita_ime_pending = Some(text.clone()),
+                    Event::KeyDown {
+                        keycode: Some(sdl2::keyboard::Keycode::Return),
+                        ..
+                    } => {
+                        if let Some(text) = vita_ime_pending.take() {
+                            app.set_title_search_query(text);
+                        }
+                        video.text_input().stop();
+                        vita_ime_active = false;
+                    }
+                    _ => {}
+                }
+            }
             // SDL may emit both events for one press.
-            if let Some(command) = map_keyboard_event(&event)
+            if !ime_owned_event
+                && let Some(command) = map_keyboard_event(&event)
                 && !direct_commands.contains(&command)
             {
                 direct_commands.push(command);
             }
-            if let Some(command) = map_controller_button_event(&event)
+            if !ime_owned_event
+                && let Some(command) = map_controller_button_event(&event)
                 && !direct_commands.contains(&command)
             {
                 direct_commands.push(command);
@@ -103,7 +130,20 @@ pub async fn run(mut app: App) -> Result<()> {
             }
         }
 
-        match held_menu_direction(controller.as_ref()) {
+        if vita_ime_active
+            && !video
+                .text_input()
+                .is_screen_keyboard_shown(surface.window())
+        {
+            video.text_input().stop();
+            vita_ime_pending = None;
+            vita_ime_active = false;
+        }
+
+        match (!vita_ime_active)
+            .then(|| held_menu_direction(controller.as_ref()))
+            .flatten()
+        {
             Some(direction) if held_direction == Some(direction) => {
                 if held_direction_since.elapsed() >= DIRECTION_REPEAT_INITIAL_DELAY
                     && last_direction_repeat_at.elapsed() >= DIRECTION_REPEAT_INTERVAL

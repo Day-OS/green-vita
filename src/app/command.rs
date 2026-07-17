@@ -1,5 +1,5 @@
 use crate::app::ui::header;
-use crate::app::ui::screens::{paused_overlay, settings};
+use crate::app::ui::screens::{paused_overlay, settings, title_list};
 use crate::{App, AppState};
 use anyhow::Result;
 
@@ -30,6 +30,7 @@ pub enum NavigationCommand {
 pub enum ScreenCommand {
     PausedOverlay(paused_overlay::Command),
     Settings(settings::Command),
+    TitleList(title_list::Command),
 }
 
 impl From<InputCommand> for AppCommand {
@@ -65,6 +66,12 @@ impl From<paused_overlay::Command> for AppCommand {
 impl From<settings::Command> for AppCommand {
     fn from(command: settings::Command) -> Self {
         Self::Screen(ScreenCommand::Settings(command))
+    }
+}
+
+impl From<title_list::Command> for AppCommand {
+    fn from(command: title_list::Command) -> Self {
+        Self::Screen(ScreenCommand::TitleList(command))
     }
 }
 
@@ -117,6 +124,9 @@ impl App {
             }
             ScreenCommand::Settings(command) => {
                 self.handle_settings_command(command)?;
+            }
+            ScreenCommand::TitleList(command) => {
+                self.handle_title_list_command(command)?;
             }
         }
 

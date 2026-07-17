@@ -38,4 +38,5 @@ title-loading = 正在載入遊戲...
 title-select-details = 選擇遊戲以查看詳細資料
 title-play = ▶ 遊玩
 title-no-description = 沒有可用描述
-
+title-search = 搜尋遊戲...
+title-search-empty = 找不到遊戲

@@ -38,4 +38,5 @@ title-loading = جارٍ تحميل الألعاب...
 title-select-details = اختر لعبة لعرض التفاصيل
 title-play = ▶ العب
 title-no-description = لا يوجد وصف متاح
-
+title-search = البحث عن الألعاب...
+title-search-empty = لم يتم العثور على ألعاب

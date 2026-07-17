@@ -38,4 +38,5 @@ title-loading = Läser in titlar...
 title-select-details = Välj en titel för att se detaljer
 title-play = ▶ SPELA
 title-no-description = Ingen beskrivning tillgänglig
-
+title-search = Sök efter spel...
+title-search-empty = Inga spel hittades

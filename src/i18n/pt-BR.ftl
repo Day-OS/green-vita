@@ -38,4 +38,5 @@ title-loading = Carregando jogos...
 title-select-details = Selecione um jogo para ver detalhes
 title-play = ▶ JOGAR
 title-no-description = Nenhuma descrição disponível
-
+title-search = Pesquisar jogos...
+title-search-empty = Nenhum jogo encontrado

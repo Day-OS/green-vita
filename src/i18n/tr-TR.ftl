@@ -38,4 +38,5 @@ title-loading = Oyunlar yükleniyor...
 title-select-details = Ayrıntıları görmek için bir oyun seç
 title-play = ▶ OYNA
 title-no-description = Açıklama yok
-
+title-search = Oyun ara...
+title-search-empty = Oyun bulunamadı
