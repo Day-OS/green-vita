@@ -250,10 +250,83 @@ fn focus_row(ui: &mut egui::Ui, selected: bool, text: impl Into<egui::WidgetText
     .clicked()
 }
 
-/// A `focus_row` with a leading `[x]`/`[ ]` checkbox glyph.
+/// A full-width focusable row with a drawn checkbox and its label side by side.
 fn checkbox_row(ui: &mut egui::Ui, selected: bool, checked: bool, label: String) -> bool {
-    let glyph = if checked { "x" } else { " " };
-    focus_row(ui, selected, format!("[{glyph}] {label}"))
+    const ROW_HEIGHT: f32 = 32.0;
+    const BOX_SIZE: f32 = 18.0;
+
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_HEIGHT),
+        egui::Sense::click(),
+    );
+
+    if ui.is_rect_visible(rect) {
+        let selection = ui.visuals().selection;
+        let row_fill = if selected {
+            selection.bg_fill
+        } else if response.hovered() {
+            ui.visuals().widgets.hovered.bg_fill
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(rect, 4.0, row_fill);
+
+        let box_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 8.0 + BOX_SIZE / 2.0, rect.center().y),
+            egui::vec2(BOX_SIZE, BOX_SIZE),
+        );
+        let accent = selection.bg_fill;
+        let box_fill = if checked {
+            if selected {
+                egui::Color32::WHITE
+            } else {
+                accent
+            }
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        let outline = if selected {
+            egui::Color32::WHITE
+        } else {
+            ui.visuals().widgets.inactive.fg_stroke.color
+        };
+        ui.painter().rect_filled(box_rect, 3.0, box_fill);
+        ui.painter().rect_stroke(
+            box_rect,
+            3.0,
+            egui::Stroke::new(1.5, outline),
+            egui::StrokeKind::Inside,
+        );
+
+        if checked {
+            let check_color = if selected {
+                accent
+            } else {
+                egui::Color32::WHITE
+            };
+            let check_stroke = egui::Stroke::new(2.5, check_color);
+            let first = egui::pos2(box_rect.left() + 3.5, box_rect.center().y);
+            let middle = egui::pos2(box_rect.left() + 7.5, box_rect.bottom() - 4.0);
+            let last = egui::pos2(box_rect.right() - 3.0, box_rect.top() + 4.0);
+            ui.painter().line_segment([first, middle], check_stroke);
+            ui.painter().line_segment([middle, last], check_stroke);
+        }
+
+        let text_color = if selected {
+            egui::Color32::WHITE
+        } else {
+            ui.visuals().text_color()
+        };
+        ui.painter().text(
+            egui::pos2(box_rect.right() + 10.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(16.0),
+            text_color,
+        );
+    }
+
+    response.clicked()
 }
 
 fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
