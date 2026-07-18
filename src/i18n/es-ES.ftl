@@ -18,6 +18,7 @@ settings-locale = Idioma/región
 settings-game = Ajustes del juego
 settings-swap-shoulders-triggers = Intercambiar L1/L2 y R1/R2
 settings-front-touch-auxiliary-buttons = Usar la pantalla táctil frontal para L2/R2/L3/R3 en vez del ratón
+settings-rear-touch-enabled = Activar controles del panel táctil trasero
 settings-cloud-host = Host de la nube: { $host }
 settings-home-host = Host local: { $host }
 settings-stream-debug-info = Mostrar información de depuración del streaming

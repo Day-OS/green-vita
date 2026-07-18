@@ -13,6 +13,7 @@ pub enum Command {
     ToggleLocaleExpanded,
     SetLocale(Locale),
     SetSwapShouldersAndTriggers { title_id: String, enabled: bool },
+    SetRearTouchEnabled { title_id: String, enabled: bool },
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
     SetShowStreamDebugInfo(bool),
 }
@@ -22,6 +23,7 @@ enum SettingsRow {
     LocaleToggle,
     LocaleOption(Locale),
     GameSwap { title_id: String, enabled: bool },
+    GameRearTouch { title_id: String, enabled: bool },
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
     StreamDebug(bool),
     Back,
@@ -47,6 +49,14 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
             .game_profile(&title_id)
             .is_some_and(|profile| profile.swap_shoulders_and_triggers);
         rows.push(SettingsRow::GameSwap {
+            title_id: title_id.clone(),
+            enabled,
+        });
+        let enabled = app
+            .settings
+            .game_profile(&title_id)
+            .is_none_or(|profile| profile.rear_touch_enabled);
+        rows.push(SettingsRow::GameRearTouch {
             title_id: title_id.clone(),
             enabled,
         });
@@ -141,6 +151,26 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                             Command::SetSwapShouldersAndTriggers {
                                 title_id: title_id.clone(),
                                 enabled: !swap_shoulders_and_triggers,
+                            }
+                            .into(),
+                        );
+                    }
+                    row_index += 1;
+
+                    let rear_touch_enabled = app
+                        .settings
+                        .game_profile(&title_id)
+                        .is_none_or(|profile| profile.rear_touch_enabled);
+                    if checkbox_row(
+                        ui,
+                        selected_index == row_index,
+                        rear_touch_enabled,
+                        i18n.text("settings-rear-touch-enabled"),
+                    ) {
+                        commands.push(
+                            Command::SetRearTouchEnabled {
+                                title_id: title_id.clone(),
+                                enabled: !rear_touch_enabled,
                             }
                             .into(),
                         );
@@ -277,6 +307,12 @@ impl App {
                     enabled: !enabled,
                 });
             }
+            SettingsRow::GameRearTouch { title_id, enabled } => {
+                return self.handle_settings_command(Command::SetRearTouchEnabled {
+                    title_id: title_id.clone(),
+                    enabled: !enabled,
+                });
+            }
             SettingsRow::GameFrontTouchAuxiliary { title_id, enabled } => {
                 return self.handle_settings_command(Command::SetFrontTouchAuxiliaryButtons {
                     title_id: title_id.clone(),
@@ -346,6 +382,10 @@ impl App {
             Command::SetSwapShouldersAndTriggers { title_id, enabled } => {
                 self.settings
                     .set_swap_shoulders_and_triggers(title_id, enabled);
+                self.settings.save();
+            }
+            Command::SetRearTouchEnabled { title_id, enabled } => {
+                self.settings.set_rear_touch_enabled(title_id, enabled);
                 self.settings.save();
             }
             Command::SetFrontTouchAuxiliaryButtons { title_id, enabled } => {

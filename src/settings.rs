@@ -104,13 +104,25 @@ pub struct Settings {
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameProfile {
     pub swap_shoulders_and_triggers: bool,
     /// When enabled, front touch mirrors the rear L2/R2/L3/R3 zones instead of acting as a
     /// clickable xCloud pointer. Defaults to pointer mode for existing profiles.
     pub front_touch_auxiliary_buttons: bool,
+    /// Controls only input from the physical rear touch panel. Front touch remains independent.
+    pub rear_touch_enabled: bool,
+}
+
+impl Default for GameProfile {
+    fn default() -> Self {
+        Self {
+            swap_shoulders_and_triggers: false,
+            front_touch_auxiliary_buttons: false,
+            rear_touch_enabled: true,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -140,6 +152,13 @@ impl Settings {
             .entry(title_id)
             .or_default()
             .front_touch_auxiliary_buttons = enabled;
+    }
+
+    pub fn set_rear_touch_enabled(&mut self, title_id: String, enabled: bool) {
+        self.game_profiles
+            .entry(title_id)
+            .or_default()
+            .rear_touch_enabled = enabled;
     }
 
     /// Loads from disk, falling back to defaults on any error.

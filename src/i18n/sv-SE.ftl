@@ -18,6 +18,7 @@ settings-locale = Språk/region
 settings-game = Spelinställningar
 settings-swap-shoulders-triggers = Byt L1/L2 och R1/R2
 settings-front-touch-auxiliary-buttons = Använd främre pekskärmen för L2/R2/L3/R3 i stället för mus
+settings-rear-touch-enabled = Aktivera bakre pekskärmskontroller
 settings-cloud-host = Molnvärd: { $host }
 settings-home-host = Hemvärd: { $host }
 settings-stream-debug-info = Visa felsökningsinfo för strömning

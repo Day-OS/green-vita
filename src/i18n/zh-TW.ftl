@@ -18,6 +18,7 @@ settings-locale = 語言/地區
 settings-game = 遊戲設定
 settings-swap-shoulders-triggers = 交換 L1/L2 和 R1/R2
 settings-front-touch-auxiliary-buttons = 將前觸控螢幕用於 L2/R2/L3/R3，而非滑鼠
+settings-rear-touch-enabled = 啟用背面觸控操作
 settings-cloud-host = 雲端主機: { $host }
 settings-home-host = 本地主機: { $host }
 settings-stream-debug-info = 顯示串流偵錯資訊

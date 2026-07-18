@@ -18,6 +18,7 @@ settings-locale = Sprache/Region
 settings-game = Spieleinstellungen
 settings-swap-shoulders-triggers = L1/L2 und R1/R2 tauschen
 settings-front-touch-auxiliary-buttons = Front-Touch für L2/R2/L3/R3 statt Maus verwenden
+settings-rear-touch-enabled = Steuerung über Rückseiten-Touch aktivieren
 settings-cloud-host = Cloud-Host: { $host }
 settings-home-host = Heim-Host: { $host }
 settings-stream-debug-info = Streaming-Debuginfos anzeigen

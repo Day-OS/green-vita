@@ -18,6 +18,7 @@ settings-locale = Dil/bölge
 settings-game = Oyun ayarları
 settings-swap-shoulders-triggers = L1/L2 ve R1/R2 değiştir
 settings-front-touch-auxiliary-buttons = Ön dokunmatiği fare yerine L2/R2/L3/R3 için kullan
+settings-rear-touch-enabled = Arka dokunmatik kontrollerini etkinleştir
 settings-cloud-host = Bulut ana makinesi: { $host }
 settings-home-host = Ev ana makinesi: { $host }
 settings-stream-debug-info = Akış hata ayıklama bilgilerini göster

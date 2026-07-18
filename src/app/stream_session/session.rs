@@ -113,6 +113,13 @@ impl StreamingSession {
             .is_some_and(|profile| profile.front_touch_auxiliary_buttons)
     }
 
+    pub(crate) fn rear_touch_enabled(&self, settings: &Settings) -> bool {
+        self.title_id
+            .as_deref()
+            .and_then(|title_id| settings.game_profile(title_id))
+            .is_none_or(|profile| profile.rear_touch_enabled)
+    }
+
     pub(crate) fn press_guide_button(&mut self) {
         self.ignore_confirm_until_release = true;
         self.rtc_worker.send_gamepad_pulse(GamepadFrame {

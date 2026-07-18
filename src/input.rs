@@ -120,6 +120,7 @@ pub fn read_gamepad_frame(
     controller: Option<&GameController>,
     raw_joystick: Option<&Joystick>,
     touch_buttons: &RearTouchButtons,
+    rear_touch_enabled: bool,
     front_touch_auxiliary_buttons: bool,
 ) -> Option<GamepadFrame> {
     let controller = controller?;
@@ -141,11 +142,19 @@ pub fn read_gamepad_frame(
         right_shoulder: button(Button::RightShoulder),
         left_thumb: f32::from(
             controller.button(Button::LeftStick)
-                || touch_buttons.pressed(RearTouchButton::L3, front_touch_auxiliary_buttons),
+                || touch_buttons.pressed(
+                    RearTouchButton::L3,
+                    rear_touch_enabled,
+                    front_touch_auxiliary_buttons,
+                ),
         ),
         right_thumb: f32::from(
             controller.button(Button::RightStick)
-                || touch_buttons.pressed(RearTouchButton::R3, front_touch_auxiliary_buttons),
+                || touch_buttons.pressed(
+                    RearTouchButton::R3,
+                    rear_touch_enabled,
+                    front_touch_auxiliary_buttons,
+                ),
         ),
         left_thumb_x_axis: axis_to_f32(controller.axis(Axis::LeftX)),
         left_thumb_y_axis: axis_to_f32(controller.axis(Axis::LeftY)),
@@ -157,7 +166,11 @@ pub fn read_gamepad_frame(
             Axis::TriggerLeft,
             4,
             12,
-            touch_buttons.pressed(RearTouchButton::L2, front_touch_auxiliary_buttons),
+            touch_buttons.pressed(
+                RearTouchButton::L2,
+                rear_touch_enabled,
+                front_touch_auxiliary_buttons,
+            ),
         ),
         right_trigger: trigger_value(
             controller,
@@ -165,7 +178,11 @@ pub fn read_gamepad_frame(
             Axis::TriggerRight,
             5,
             13,
-            touch_buttons.pressed(RearTouchButton::R2, front_touch_auxiliary_buttons),
+            touch_buttons.pressed(
+                RearTouchButton::R2,
+                rear_touch_enabled,
+                front_touch_auxiliary_buttons,
+            ),
         ),
     })
 }
@@ -267,8 +284,8 @@ impl RearTouchButtons {
         }
     }
 
-    fn pressed(&self, button: RearTouchButton, include_front: bool) -> bool {
-        self.rear_fingers.values().any(|pressed| *pressed == button)
+    fn pressed(&self, button: RearTouchButton, include_rear: bool, include_front: bool) -> bool {
+        (include_rear && self.rear_fingers.values().any(|pressed| *pressed == button))
             || (include_front
                 && self
                     .front_fingers

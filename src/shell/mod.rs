@@ -190,11 +190,13 @@ pub async fn run(mut app: App) -> Result<()> {
         }
 
         let settings = &app.settings;
-        let front_touch_auxiliary_buttons = matches!(
-            &app.state,
-            AppState::Streaming(streaming)
-                if !streaming.paused && streaming.front_touch_auxiliary_buttons(settings)
-        );
+        let (rear_touch_enabled, front_touch_auxiliary_buttons) = match &app.state {
+            AppState::Streaming(streaming) if !streaming.paused => (
+                streaming.rear_touch_enabled(settings),
+                streaming.front_touch_auxiliary_buttons(settings),
+            ),
+            _ => (true, false),
+        };
         if let AppState::Streaming(streaming) = &mut app.state
             && !streaming.paused
         {
@@ -202,6 +204,7 @@ pub async fn run(mut app: App) -> Result<()> {
                 controller.as_ref(),
                 raw_joystick.as_ref(),
                 &rear_touch_buttons,
+                rear_touch_enabled,
                 front_touch_auxiliary_buttons,
             ) {
                 // Back is relayed separately after the hold gesture resolves.

@@ -18,6 +18,7 @@ settings-locale = 言語/地域
 settings-game = ゲーム設定
 settings-swap-shoulders-triggers = L1/L2 と R1/R2 を入れ替え
 settings-front-touch-auxiliary-buttons = 前面タッチをマウスではなくL2/R2/L3/R3に使用
+settings-rear-touch-enabled = 背面タッチ操作を有効にする
 settings-cloud-host = クラウドホスト: { $host }
 settings-home-host = ホームホスト: { $host }
 settings-stream-debug-info = ストリーミングのデバッグ情報を表示

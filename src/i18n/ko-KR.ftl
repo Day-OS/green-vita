@@ -18,6 +18,7 @@ settings-locale = 언어/지역
 settings-game = 게임 설정
 settings-swap-shoulders-triggers = L1/L2 및 R1/R2 바꾸기
 settings-front-touch-auxiliary-buttons = 전면 터치를 마우스 대신 L2/R2/L3/R3로 사용
+settings-rear-touch-enabled = 후면 터치 조작 활성화
 settings-cloud-host = 클라우드 호스트: { $host }
 settings-home-host = 홈 호스트: { $host }
 settings-stream-debug-info = 스트리밍 디버그 정보 표시

@@ -18,6 +18,7 @@ settings-locale = 语言/区域
 settings-game = 游戏设置
 settings-swap-shoulders-triggers = 交换 L1/L2 和 R1/R2
 settings-front-touch-auxiliary-buttons = 将前触屏用于 L2/R2/L3/R3，而非鼠标
+settings-rear-touch-enabled = 启用背面触控操作
 settings-cloud-host = 云端主机: { $host }
 settings-home-host = 本地主机: { $host }
 settings-stream-debug-info = 显示串流调试信息
