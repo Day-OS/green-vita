@@ -6,7 +6,9 @@ use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use vitasdk_sys::*;
 
-const AVCDEC_NUM_REF_FRAMES: u32 = 3;
+// The idea of reducing the reference frames came from MattKC on his Vanilla project
+// Make sure to check it out, good content :)
+const AVCDEC_NUM_REF_FRAMES: u32 = 1;
 // AVCDEC and SDL's Vita GXM renderer both support RGB565 natively. At 960x544 this halves the
 // decoder-to-texture traffic from roughly 2 MiB to 1 MiB per frame, which matters at 60 FPS.
 const OUTPUT_BYTES_PER_PIXEL: u32 = 2;

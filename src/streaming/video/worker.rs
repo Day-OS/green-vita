@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-const MAX_PENDING_ACCESS_UNITS: usize = 4;
+const MAX_PENDING_ACCESS_UNITS: usize = 1;
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
