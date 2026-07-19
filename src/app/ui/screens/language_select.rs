@@ -1,5 +1,5 @@
 use crate::app::command::{move_next, move_prev};
-use crate::app::ui::header::show_header_row;
+use crate::app::ui::header::show_header_row_with_action;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::show_selectable_list;
 use crate::i18n::I18n;
@@ -12,6 +12,7 @@ const ROW_COUNT: usize = CONTINUE_INDEX + 1;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     ActivateSelected,
+    Continue,
 }
 
 pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand>) {
@@ -21,7 +22,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
     let selected = *selected;
     let theme = Theme::dark();
     let i18n = I18n::new(app.settings.locale);
-    let mut rows: Vec<_> = Locale::ALL
+    let rows: Vec<_> = Locale::ALL
         .iter()
         .copied()
         .map(|locale| {
@@ -33,12 +34,20 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
             (format!("{marker}{}", locale.label()), None)
         })
         .collect();
-    rows.push((i18n.text("language-select-continue"), None));
 
     let mut frame = egui::Frame::central_panel(&ctx.style());
     frame.fill = theme.background;
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-        show_header_row(ui, app, theme, &i18n, None);
+        if show_header_row_with_action(
+            ui,
+            app,
+            theme,
+            &i18n,
+            i18n.text("language-select-continue"),
+            selected == CONTINUE_INDEX,
+        ) {
+            commands.push(Command::Continue.into());
+        }
         ui.separator();
         ui.add_space(8.0);
         ui.colored_label(theme.text, i18n.text("language-select-prompt"));
@@ -73,6 +82,7 @@ impl App {
     pub(crate) fn handle_language_select_command(&mut self, command: Command) {
         match command {
             Command::ActivateSelected => self.activate_selected_language_row(),
+            Command::Continue => self.request_device_code(),
         }
     }
 

@@ -34,23 +34,61 @@ pub(crate) fn show_header_row(
 ) {
     egui::Sides::new().show(
         ui,
-        |ui| {
-            let logo_size = 36.0;
-            let (logo_rect, _) =
-                ui.allocate_exact_size(egui::vec2(logo_size, logo_size), egui::Sense::hover());
-            draw_title_image(ui, &app.service.logo, logo_rect, "xbox-logo");
-            ui.add_space(8.0);
-            ui.heading(
-                egui::RichText::new(i18n.screen_title(&app.state))
-                    .size(28.0)
-                    .color(theme.text_bright),
-            );
-        },
+        |ui| show_header_identity(ui, app, theme, i18n),
         |ui| {
             if let Some(commands) = menu_commands {
                 show_hamburger_menu(ui, app, theme, i18n, commands);
             }
         },
+    );
+}
+
+pub(crate) fn show_header_row_with_action(
+    ui: &mut egui::Ui,
+    app: &App,
+    theme: Theme,
+    i18n: &I18n,
+    action_label: String,
+    action_selected: bool,
+) -> bool {
+    let mut clicked = false;
+    egui::Sides::new().show(
+        ui,
+        |ui| show_header_identity(ui, app, theme, i18n),
+        |ui| {
+            let fill = if action_selected {
+                theme.accent
+            } else {
+                egui::Color32::from_rgb(0x26, 0x27, 0x2c)
+            };
+            let stroke = if action_selected {
+                egui::Stroke::new(2.0, egui::Color32::WHITE)
+            } else {
+                egui::Stroke::NONE
+            };
+            let button = egui::Button::new(
+                egui::RichText::new(action_label)
+                    .size(16.0)
+                    .color(egui::Color32::WHITE),
+            )
+            .fill(fill)
+            .stroke(stroke);
+            clicked = ui.add_sized(egui::vec2(280.0, 36.0), button).clicked();
+        },
+    );
+    clicked
+}
+
+fn show_header_identity(ui: &mut egui::Ui, app: &App, theme: Theme, i18n: &I18n) {
+    let logo_size = 36.0;
+    let (logo_rect, _) =
+        ui.allocate_exact_size(egui::vec2(logo_size, logo_size), egui::Sense::hover());
+    draw_title_image(ui, &app.service.logo, logo_rect, "xbox-logo");
+    ui.add_space(8.0);
+    ui.heading(
+        egui::RichText::new(i18n.screen_title(&app.state))
+            .size(28.0)
+            .color(theme.text_bright),
     );
 }
 
