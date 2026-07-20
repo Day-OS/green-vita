@@ -25,6 +25,9 @@ impl DeltaCounter {
 }
 
 struct VideoMetrics {
+    rtp_assembly_sum_us: AtomicU64,
+    rtp_assembly_count: AtomicU64,
+    rtp_assembly_max_us: AtomicU64,
     decode_us: AtomicU64,
     pipeline_age_us: AtomicU64,
     decoded: DeltaCounter,
@@ -37,6 +40,9 @@ struct VideoMetrics {
 }
 
 static METRICS: VideoMetrics = VideoMetrics {
+    rtp_assembly_sum_us: AtomicU64::new(0),
+    rtp_assembly_count: AtomicU64::new(0),
+    rtp_assembly_max_us: AtomicU64::new(0),
     decode_us: AtomicU64::new(0),
     pipeline_age_us: AtomicU64::new(0),
     decoded: DeltaCounter::new(),
@@ -66,6 +72,17 @@ static DECODER_MEMORY: DecoderMemoryMetrics = DecoderMemoryMetrics {
 
 fn micros(duration: Duration) -> u64 {
     duration.as_micros().min(u64::MAX as u128) as u64
+}
+
+pub(crate) fn record_rtp_assembly(duration: Duration) {
+    let elapsed_us = micros(duration);
+    METRICS
+        .rtp_assembly_sum_us
+        .fetch_add(elapsed_us, Ordering::Relaxed);
+    METRICS.rtp_assembly_count.fetch_add(1, Ordering::Relaxed);
+    METRICS
+        .rtp_assembly_max_us
+        .fetch_max(elapsed_us, Ordering::Relaxed);
 }
 
 pub(super) fn record_decode(duration: Duration) {
@@ -136,8 +153,12 @@ pub fn record_video_presented() {
 }
 
 pub fn video_performance_summary() -> String {
+    let rtp_sum = METRICS.rtp_assembly_sum_us.swap(0, Ordering::Relaxed);
+    let rtp_count = METRICS.rtp_assembly_count.swap(0, Ordering::Relaxed);
+    let rtp_average = rtp_sum.checked_div(rtp_count).unwrap_or(0);
+    let rtp_max = METRICS.rtp_assembly_max_us.swap(0, Ordering::Relaxed);
     format!(
-        "fps d/p:{}/{} us d/a:{}/{} skip:{} repl:{} q:{} rs:{} rst:{}",
+        "fps d/p:{}/{} us r:{rtp_average}/{rtp_max} d/a:{}/{} skip:{} repl:{} q:{} rs:{} rst:{}",
         METRICS.decoded.take_delta(),
         METRICS.presented.take_delta(),
         METRICS.decode_us.load(Ordering::Relaxed),

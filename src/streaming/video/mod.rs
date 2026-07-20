@@ -4,6 +4,7 @@ mod metrics;
 mod worker;
 
 pub use memory::{decoder_memory_summary, reserve_decoder_cdram};
+pub(crate) use metrics::record_rtp_assembly;
 pub use metrics::{record_video_presented, video_performance_summary};
 pub use worker::VideoDecodeWorker;
 
