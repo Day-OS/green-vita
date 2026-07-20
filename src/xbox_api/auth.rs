@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use reqwest::Client;
+use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
+use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
@@ -8,6 +10,13 @@ const OAUTH_SCOPE: &str = "xboxlive.signin openid profile offline_access";
 const TOKEN_STORE_DIR: &str = "ux0:data/xcloud-rust";
 const TOKEN_STORE_PATH: &str = "ux0:data/xcloud-rust/xcloud-tokens.json";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TOKEN_STORE_VERSION: u8 = 1;
+const TOKEN_KEY_MAGIC: &[u8; 8] = b"GVTKEY01";
+const TOKEN_KEY_SIZE: usize = 32;
+const TOKEN_KEY_RECORD_SIZE: usize = TOKEN_KEY_MAGIC.len() + TOKEN_KEY_SIZE;
+const TOKEN_KEY_OFFSET: i64 = 0;
+const TOKEN_NONCE_SIZE: usize = 12;
+const TOKEN_AAD: &[u8] = b"green-vita/xcloud-refresh-token/v1";
 
 #[derive(Debug, Clone)]
 pub struct EndpointCredentials {
@@ -68,7 +77,21 @@ pub enum DeviceCodePoll {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct TokenStoreData {
+    version: u8,
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyTokenStoreData {
     refresh_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum StoredTokenData {
+    Encrypted(TokenStoreData),
+    Legacy(LegacyTokenStoreData),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -158,10 +181,23 @@ pub struct MsalAuth {
 impl MsalAuth {
     pub fn new() -> Self {
         let _ = ensure_token_store_dir();
-        let refresh_token = std::fs::File::open(TOKEN_STORE_PATH)
-            .ok()
-            .and_then(|file| serde_json::from_reader::<_, TokenStoreData>(file).ok())
-            .map(|data| data.refresh_token);
+        let refresh_token = match load_saved_refresh_token() {
+            Ok(Some(SavedRefreshToken::Encrypted(token))) => Some(token),
+            Ok(Some(SavedRefreshToken::Legacy(token))) => {
+                // Never leave the old plaintext token behind, even if Safe Memory is unavailable.
+                let _ = std::fs::remove_file(TOKEN_STORE_PATH);
+                if let Err(error) = persist_refresh_token(&token) {
+                    eprintln!("Could not migrate saved xCloud login encryption: {error:#}");
+                }
+                Some(token)
+            }
+            Ok(None) => None,
+            Err(error) => {
+                eprintln!("Could not load encrypted xCloud login; clearing it: {error:#}");
+                let _ = std::fs::remove_file(TOKEN_STORE_PATH);
+                None
+            }
+        };
 
         Self {
             client: Client::builder()
@@ -183,13 +219,7 @@ impl MsalAuth {
     fn save_refresh_token(&mut self, refresh_token: String) {
         self.refresh_token = Some(refresh_token.clone());
 
-        let result = ensure_token_store_dir().and_then(|_| {
-            crate::fs_utils::write_file_truncating(
-                TOKEN_STORE_PATH,
-                serde_json::to_string_pretty(&TokenStoreData { refresh_token })?,
-            )
-            .context("failed to persist xCloud login token")
-        });
+        let result = persist_refresh_token(&refresh_token);
         if let Err(error) = result {
             eprintln!("Could not persist xCloud login: {error:#}");
         }
@@ -198,6 +228,9 @@ impl MsalAuth {
     fn clear_saved_login(&mut self) {
         self.refresh_token = None;
         let _ = std::fs::remove_file(TOKEN_STORE_PATH);
+        if let Err(error) = clear_token_key() {
+            eprintln!("Could not clear xCloud login key from Safe Memory: {error:#}");
+        }
     }
 
     async fn post_form(
@@ -510,6 +543,146 @@ impl MsalAuth {
 
 fn ensure_token_store_dir() -> Result<()> {
     std::fs::create_dir_all(TOKEN_STORE_DIR).context("failed to create xCloud token directory")
+}
+
+enum SavedRefreshToken {
+    Encrypted(String),
+    Legacy(String),
+}
+
+fn load_saved_refresh_token() -> Result<Option<SavedRefreshToken>> {
+    let file = match std::fs::File::open(TOKEN_STORE_PATH) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("failed to open xCloud token store"),
+    };
+    match serde_json::from_reader::<_, StoredTokenData>(file)
+        .context("failed to parse xCloud token store")?
+    {
+        StoredTokenData::Encrypted(data) => decrypt_refresh_token(&data)
+            .map(SavedRefreshToken::Encrypted)
+            .map(Some),
+        StoredTokenData::Legacy(data) => Ok(Some(SavedRefreshToken::Legacy(data.refresh_token))),
+    }
+}
+
+fn persist_refresh_token(refresh_token: &str) -> Result<()> {
+    let data = encrypt_refresh_token(refresh_token)?;
+    ensure_token_store_dir()?;
+    crate::fs_utils::write_file_truncating(TOKEN_STORE_PATH, serde_json::to_string_pretty(&data)?)
+        .context("failed to persist encrypted xCloud login token")
+}
+
+fn encrypt_refresh_token(refresh_token: &str) -> Result<TokenStoreData> {
+    let key = load_or_create_token_key()?;
+    let mut nonce = [0u8; TOKEN_NONCE_SIZE];
+    SystemRandom::new()
+        .fill(&mut nonce)
+        .map_err(|_| anyhow::anyhow!("failed to generate xCloud token nonce"))?;
+    let cipher = token_cipher(&key)?;
+    let mut ciphertext = refresh_token.as_bytes().to_vec();
+    cipher
+        .seal_in_place_append_tag(
+            Nonce::assume_unique_for_key(nonce),
+            Aad::from(TOKEN_AAD),
+            &mut ciphertext,
+        )
+        .map_err(|_| anyhow::anyhow!("failed to encrypt xCloud login token"))?;
+    Ok(TokenStoreData {
+        version: TOKEN_STORE_VERSION,
+        nonce: encode_hex(&nonce),
+        ciphertext: encode_hex(&ciphertext),
+    })
+}
+
+fn decrypt_refresh_token(data: &TokenStoreData) -> Result<String> {
+    if data.version != TOKEN_STORE_VERSION {
+        bail!("unsupported xCloud token store version {}", data.version);
+    }
+    let nonce = decode_hex(&data.nonce).context("invalid xCloud token nonce")?;
+    let nonce: [u8; TOKEN_NONCE_SIZE] = nonce
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid xCloud token nonce length"))?;
+    let mut ciphertext = decode_hex(&data.ciphertext).context("invalid xCloud ciphertext")?;
+    let key = load_token_key()?;
+    let cipher = token_cipher(&key)?;
+    let plaintext = cipher
+        .open_in_place(
+            Nonce::assume_unique_for_key(nonce),
+            Aad::from(TOKEN_AAD),
+            &mut ciphertext,
+        )
+        .map_err(|_| anyhow::anyhow!("xCloud token authentication failed"))?;
+    String::from_utf8(plaintext.to_vec()).context("decrypted xCloud token is not UTF-8")
+}
+
+fn token_cipher(key: &[u8; TOKEN_KEY_SIZE]) -> Result<LessSafeKey> {
+    let key = UnboundKey::new(&aead::CHACHA20_POLY1305, key)
+        .map_err(|_| anyhow::anyhow!("failed to initialize xCloud token cipher"))?;
+    Ok(LessSafeKey::new(key))
+}
+
+fn load_token_key() -> Result<[u8; TOKEN_KEY_SIZE]> {
+    let record = crate::safe_memory::load::<TOKEN_KEY_RECORD_SIZE>(TOKEN_KEY_OFFSET)?;
+    if &record[..TOKEN_KEY_MAGIC.len()] != TOKEN_KEY_MAGIC {
+        bail!("xCloud token key is missing from Safe Memory");
+    }
+    let mut key = [0u8; TOKEN_KEY_SIZE];
+    key.copy_from_slice(&record[TOKEN_KEY_MAGIC.len()..]);
+    Ok(key)
+}
+
+fn load_or_create_token_key() -> Result<[u8; TOKEN_KEY_SIZE]> {
+    if let Ok(key) = load_token_key() {
+        return Ok(key);
+    }
+    let mut key = [0u8; TOKEN_KEY_SIZE];
+    SystemRandom::new()
+        .fill(&mut key)
+        .map_err(|_| anyhow::anyhow!("failed to generate xCloud token key"))?;
+    let mut record = [0u8; TOKEN_KEY_RECORD_SIZE];
+    record[..TOKEN_KEY_MAGIC.len()].copy_from_slice(TOKEN_KEY_MAGIC);
+    record[TOKEN_KEY_MAGIC.len()..].copy_from_slice(&key);
+    crate::safe_memory::save(TOKEN_KEY_OFFSET, &record)?;
+    Ok(key)
+}
+
+fn clear_token_key() -> Result<()> {
+    crate::safe_memory::save(TOKEN_KEY_OFFSET, &[0u8; TOKEN_KEY_RECORD_SIZE])
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn decode_hex(encoded: &str) -> Result<Vec<u8>> {
+    if !encoded.len().is_multiple_of(2) {
+        bail!("hex value has an odd length");
+    }
+    encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = decode_hex_digit(pair[0])?;
+            let low = decode_hex_digit(pair[1])?;
+            Ok((high << 4) | low)
+        })
+        .collect()
+}
+
+fn decode_hex_digit(digit: u8) -> Result<u8> {
+    match digit {
+        b'0'..=b'9' => Ok(digit - b'0'),
+        b'a'..=b'f' => Ok(digit - b'a' + 10),
+        b'A'..=b'F' => Ok(digit - b'A' + 10),
+        _ => bail!("invalid hex digit"),
+    }
 }
 
 fn urlencode(value: &str) -> String {

@@ -3,6 +3,7 @@ use vita_newlib_shims as _;
 mod app;
 mod i18n;
 mod input;
+mod safe_memory;
 mod settings;
 mod shell;
 mod streaming;
@@ -42,6 +43,7 @@ mod fs_utils {
 }
 
 fn main() -> anyhow::Result<()> {
+    let _app_util = safe_memory::AppUtil::initialize()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
