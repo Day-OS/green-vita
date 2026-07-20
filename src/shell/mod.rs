@@ -25,6 +25,7 @@ const UI_SCALE: f32 = 1.3;
 // D-Pad/left-stick auto-repeat: immediate on press, then repeating once held past the delay.
 const DIRECTION_REPEAT_INITIAL_DELAY: Duration = Duration::from_millis(350);
 const DIRECTION_REPEAT_INTERVAL: Duration = Duration::from_millis(90);
+const STREAM_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
 
 pub(crate) const TARGET_FRAME_TIME: Duration = Duration::from_millis(16);
 
@@ -189,29 +190,13 @@ pub async fn run(mut app: App) -> Result<()> {
             app.handle_command(command).await?;
         }
 
-        let settings = &app.settings;
-        let (rear_touch_enabled, front_touch_auxiliary_buttons) = match &app.state {
-            AppState::Streaming(streaming) if !streaming.paused => (
-                streaming.rear_touch_enabled(settings),
-                streaming.front_touch_auxiliary_buttons(settings),
-            ),
-            _ => (true, false),
-        };
-        if let AppState::Streaming(streaming) = &mut app.state
-            && !streaming.paused
-        {
-            if let Some(mut gamepad_frame) = read_gamepad_frame(
-                controller.as_ref(),
-                raw_joystick.as_ref(),
-                &rear_touch_buttons,
-                rear_touch_enabled,
-                front_touch_auxiliary_buttons,
-            ) {
-                // Back is relayed separately after the hold gesture resolves.
-                gamepad_frame.view = f32::from(relay_back_as_view);
-                streaming.send_gamepad_frame(gamepad_frame, settings);
-            }
-        }
+        send_stream_gamepad_state(
+            &mut app,
+            controller.as_ref(),
+            raw_joystick.as_ref(),
+            &rear_touch_buttons,
+            relay_back_as_view,
+        );
 
         app.tick().await?;
         if let Some(streaming) = app.state.streaming_mut() {
@@ -257,11 +242,61 @@ pub async fn run(mut app: App) -> Result<()> {
             &full_output.textures_delta,
         )?;
 
-        let remaining_frame_time = TARGET_FRAME_TIME.saturating_sub(loop_started_at.elapsed());
-        if !remaining_frame_time.is_zero() {
-            sleep(remaining_frame_time).await;
+        let frame_deadline = loop_started_at + TARGET_FRAME_TIME;
+        if Instant::now() < frame_deadline {
+            while Instant::now() < frame_deadline {
+                let remaining = frame_deadline.saturating_duration_since(Instant::now());
+                sleep(remaining.min(STREAM_INPUT_POLL_INTERVAL)).await;
+                if Instant::now() >= frame_deadline {
+                    break;
+                }
+
+                // SDL controller state is refreshed independently of rendering. Events remain
+                // queued for the normal UI pass at the start of the next frame.
+                event_pump.pump_events();
+                send_stream_gamepad_state(
+                    &mut app,
+                    controller.as_ref(),
+                    raw_joystick.as_ref(),
+                    &rear_touch_buttons,
+                    false,
+                );
+            }
         } else {
             tokio::task::yield_now().await;
         }
     }
+}
+
+fn send_stream_gamepad_state(
+    app: &mut App,
+    controller: Option<&sdl2::controller::GameController>,
+    raw_joystick: Option<&sdl2::joystick::Joystick>,
+    rear_touch_buttons: &RearTouchButtons,
+    relay_back_as_view: bool,
+) {
+    let settings = &app.settings;
+    let (rear_touch_enabled, front_touch_auxiliary_buttons) = match &app.state {
+        AppState::Streaming(streaming) if !streaming.paused => (
+            streaming.rear_touch_enabled(settings),
+            streaming.front_touch_auxiliary_buttons(settings),
+        ),
+        _ => return,
+    };
+    let AppState::Streaming(streaming) = &mut app.state else {
+        return;
+    };
+    let Some(mut frame) = read_gamepad_frame(
+        controller,
+        raw_joystick,
+        rear_touch_buttons,
+        rear_touch_enabled,
+        front_touch_auxiliary_buttons,
+    ) else {
+        return;
+    };
+
+    // Back is relayed separately after the hold gesture resolves.
+    frame.view = f32::from(relay_back_as_view);
+    streaming.send_gamepad_frame(frame, settings);
 }

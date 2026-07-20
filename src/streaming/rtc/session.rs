@@ -115,14 +115,14 @@ impl RtcSession {
         self.audio.drain()
     }
 
-    pub fn send_gamepad_frame(&mut self, frame: GamepadFrame) {
+    pub fn send_gamepad_frame(&mut self, frame: GamepadFrame) -> bool {
         if !self.input_channel_ready {
-            return;
+            return false;
         }
         let Some(bytes) = self.input_queue.queue_gamepad_frames([frame], true) else {
-            return;
+            return false;
         };
-        self.send_input_bytes(&bytes);
+        self.send_input_bytes(&bytes)
     }
 
     pub fn send_pointer_event(&mut self, event: PointerEvent) {
@@ -134,13 +134,15 @@ impl RtcSession {
         }) else {
             return;
         };
-        self.send_input_bytes(&bytes);
+        let _ = self.send_input_bytes(&bytes);
     }
 
-    fn send_input_bytes(&mut self, bytes: &[u8]) {
+    fn send_input_bytes(&mut self, bytes: &[u8]) -> bool {
         let input_channel_id = self.peer.channel_ids.input;
         if let Some(mut input_channel) = self.peer.peer_connection.data_channel(input_channel_id) {
-            let _ = input_channel.send(BytesMut::from(bytes));
+            input_channel.send(BytesMut::from(bytes)).is_ok()
+        } else {
+            false
         }
     }
 

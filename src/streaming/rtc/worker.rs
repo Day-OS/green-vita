@@ -35,12 +35,17 @@ enum RtcWorkerCommand {
     Stop,
 }
 
+struct SampledGamepadFrame {
+    frame: GamepadFrame,
+    sampled_at: Instant,
+}
+
 pub struct RtcWorker {
     commands_tx: SyncSender<RtcWorkerCommand>,
     events_rx: Receiver<RtcWorkerEvent>,
     audio_rx: Receiver<Vec<Bytes>>,
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
-    latest_gamepad: Arc<Mutex<Option<GamepadFrame>>>,
+    latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
     direct_video_output: Arc<DirectVideoOutput>,
 }
@@ -128,7 +133,10 @@ impl RtcWorker {
 
     pub fn send_gamepad_frame(&self, frame: GamepadFrame) {
         if let Ok(mut latest) = self.latest_gamepad.lock() {
-            *latest = Some(frame);
+            *latest = Some(SampledGamepadFrame {
+                frame,
+                sampled_at: Instant::now(),
+            });
         }
     }
 
@@ -155,7 +163,7 @@ fn run_worker_thread(
     events_tx: SyncSender<RtcWorkerEvent>,
     audio_tx: SyncSender<Vec<Bytes>>,
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
-    latest_gamepad: Arc<Mutex<Option<GamepadFrame>>>,
+    latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
     direct_video_output: Arc<DirectVideoOutput>,
 ) -> Result<()> {
@@ -201,7 +209,7 @@ async fn run_session(
     events_tx: SyncSender<RtcWorkerEvent>,
     audio_tx: SyncSender<Vec<Bytes>>,
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
-    latest_gamepad: Arc<Mutex<Option<GamepadFrame>>>,
+    latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
 ) -> Result<()> {
     let mut last_frame_sent = None;
@@ -234,16 +242,23 @@ async fn run_session(
                 active_gamepad_pulse = None;
                 // A pulse must have a distinct release packet even when normal controller input
                 // is temporarily suppressed (for example, until Confirm is released).
-                session.send_gamepad_frame(latest.unwrap_or_default());
+                if let Some(sampled) = latest {
+                    send_sampled_gamepad_frame(&mut session, sampled);
+                } else {
+                    let _ = session.send_gamepad_frame(GamepadFrame::default());
+                }
             } else if pulse_started || latest.is_some() {
-                let mut frame = latest.unwrap_or_default();
+                let mut sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
+                    frame: GamepadFrame::default(),
+                    sampled_at: Instant::now(),
+                });
                 // Guide/Nexus is currently the only pulsed input. Keep it asserted while normal
                 // gamepad frames continue to flow instead of immediately overwriting the press.
-                frame.nexus = frame.nexus.max(pulse.nexus);
-                session.send_gamepad_frame(frame);
+                sampled.frame.nexus = sampled.frame.nexus.max(pulse.nexus);
+                send_sampled_gamepad_frame(&mut session, sampled);
             }
-        } else if let Some(frame) = latest {
-            session.send_gamepad_frame(frame);
+        } else if let Some(sampled) = latest {
+            send_sampled_gamepad_frame(&mut session, sampled);
         }
 
         let local_candidates = match session.pump().await {
@@ -311,6 +326,12 @@ async fn run_session(
         }
 
         tokio::time::sleep(PUMP_SLEEP).await;
+    }
+}
+
+fn send_sampled_gamepad_frame(session: &mut RtcSession, sampled: SampledGamepadFrame) {
+    if session.send_gamepad_frame(sampled.frame) {
+        crate::streaming::control::metrics::record_gamepad_send_age(sampled.sampled_at.elapsed());
     }
 }
 

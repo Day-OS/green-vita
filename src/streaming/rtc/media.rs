@@ -123,6 +123,7 @@ impl VideoReceiver {
         self.last_stats_report = now;
 
         let performance = crate::streaming::video::video_performance_summary();
+        let input = crate::streaming::control::metrics::input_performance_summary();
         let memory = crate::streaming::video::decoder_memory_summary();
         let source_fps = self
             .stats
@@ -131,7 +132,7 @@ impl VideoReceiver {
             .map(|duration| 1_000_000 / duration)
             .unwrap_or(0);
         Some(format!(
-            "srcfps:{source_fps} {performance} {memory} wait:{} drop:{} err:{}",
+            "srcfps:{source_fps} {performance} {input} {memory} wait:{} drop:{} err:{}",
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.dropped,
             self.stats.decode_errors,
