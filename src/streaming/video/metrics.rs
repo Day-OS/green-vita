@@ -26,12 +26,10 @@ impl DeltaCounter {
 
 struct VideoMetrics {
     decode_us: AtomicU64,
-    copy_us: AtomicU64,
     pipeline_age_us: AtomicU64,
-    upload_us: AtomicU64,
     decoded: DeltaCounter,
     skipped: DeltaCounter,
-    uploaded: DeltaCounter,
+    presented: DeltaCounter,
     replaced: DeltaCounter,
     queue_full: DeltaCounter,
     resyncs: AtomicU64,
@@ -40,12 +38,10 @@ struct VideoMetrics {
 
 static METRICS: VideoMetrics = VideoMetrics {
     decode_us: AtomicU64::new(0),
-    copy_us: AtomicU64::new(0),
     pipeline_age_us: AtomicU64::new(0),
-    upload_us: AtomicU64::new(0),
     decoded: DeltaCounter::new(),
     skipped: DeltaCounter::new(),
-    uploaded: DeltaCounter::new(),
+    presented: DeltaCounter::new(),
     replaced: DeltaCounter::new(),
     queue_full: DeltaCounter::new(),
     resyncs: AtomicU64::new(0),
@@ -74,10 +70,6 @@ fn micros(duration: Duration) -> u64 {
 
 pub(super) fn record_decode(duration: Duration) {
     METRICS.decode_us.store(micros(duration), Ordering::Relaxed);
-}
-
-pub(super) fn record_copy(duration: Duration) {
-    METRICS.copy_us.store(micros(duration), Ordering::Relaxed);
 }
 
 pub(super) fn record_pipeline_age(duration: Duration) {
@@ -139,19 +131,16 @@ pub(super) fn decoder_memory_summary(free_memory: &str) -> String {
     )
 }
 
-pub fn record_video_upload(duration: Duration) {
-    METRICS.upload_us.store(micros(duration), Ordering::Relaxed);
-    METRICS.uploaded.increment();
+pub fn record_video_presented() {
+    METRICS.presented.increment();
 }
 
 pub fn video_performance_summary() -> String {
     format!(
-        "fps d/u:{}/{} us d/c/u/a:{}/{}/{}/{} skip:{} repl:{} q:{} rs:{} rst:{}",
+        "fps d/p:{}/{} us d/a:{}/{} skip:{} repl:{} q:{} rs:{} rst:{}",
         METRICS.decoded.take_delta(),
-        METRICS.uploaded.take_delta(),
+        METRICS.presented.take_delta(),
         METRICS.decode_us.load(Ordering::Relaxed),
-        METRICS.copy_us.load(Ordering::Relaxed),
-        METRICS.upload_us.load(Ordering::Relaxed),
         METRICS.pipeline_age_us.load(Ordering::Relaxed),
         METRICS.skipped.take_delta(),
         METRICS.replaced.take_delta(),

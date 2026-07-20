@@ -4,7 +4,7 @@ use crate::streaming::rtc::AUDIO_SAMPLE_RATE;
 use crate::streaming::rtc::ice;
 use crate::streaming::rtc::media::{AudioReceiver, VideoReceiver};
 use crate::streaming::rtc::peer::RtcPeer;
-use crate::streaming::video::{DecodedFrame, DecoderConfig};
+use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use rtc::peer_connection::event::{RTCDataChannelEvent, RTCPeerConnectionEvent, RTCTrackEvent};
@@ -15,6 +15,7 @@ use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::sansio::Protocol;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 
@@ -24,8 +25,8 @@ pub const STREAM_WIDTH: u32 = 1280;
 pub const STREAM_HEIGHT: u32 = 720;
 pub const HW_DECODE_WIDTH: u32 = 1280;
 pub const HW_DECODE_HEIGHT: u32 = 720;
-const HW_OUTPUT_WIDTH: u32 = 960;
-const HW_OUTPUT_HEIGHT: u32 = 544;
+pub(super) const HW_OUTPUT_WIDTH: u32 = 960;
+pub(super) const HW_OUTPUT_HEIGHT: u32 = 544;
 
 pub struct RtcSession {
     pub peer: RtcPeer,
@@ -44,19 +45,22 @@ pub struct RtcSession {
 }
 
 impl RtcSession {
-    pub async fn new(mut peer: RtcPeer) -> Result<Self> {
+    pub async fn new(mut peer: RtcPeer, direct_output: Arc<DirectVideoOutput>) -> Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .context("failed to bind UDP socket for WebRTC transport")?;
         let socket_addr = socket
             .local_addr()
             .context("failed to read local UDP socket address")?;
-        let video = VideoReceiver::new(DecoderConfig {
-            decode_width: HW_DECODE_WIDTH,
-            decode_height: HW_DECODE_HEIGHT,
-            output_width: HW_OUTPUT_WIDTH,
-            output_height: HW_OUTPUT_HEIGHT,
-        })?;
+        let video = VideoReceiver::new(
+            DecoderConfig {
+                decode_width: HW_DECODE_WIDTH,
+                decode_height: HW_DECODE_HEIGHT,
+                output_width: HW_OUTPUT_WIDTH,
+                output_height: HW_OUTPUT_HEIGHT,
+            },
+            direct_output,
+        )?;
 
         let host_addr = ice::add_host_candidate(&mut peer.peer_connection, socket_addr.port())
             .context("failed to add local host ICE candidate")?;

@@ -1,8 +1,8 @@
 use crate::Stream;
 use crate::streaming::control::input::{GamepadFrame, PointerEvent};
 use crate::streaming::rtc::peer::RtcPeer;
-use crate::streaming::rtc::session::RtcSession;
-use crate::streaming::video::DecodedFrame;
+use crate::streaming::rtc::session::{HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH, RtcSession};
+use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use rtc::peer_connection::state::RTCPeerConnectionState;
@@ -42,6 +42,7 @@ pub struct RtcWorker {
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<GamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
+    direct_video_output: Arc<DirectVideoOutput>,
 }
 
 impl RtcWorker {
@@ -55,6 +56,9 @@ impl RtcWorker {
         let worker_latest_gamepad = Arc::clone(&latest_gamepad);
         let gamepad_pulses = Arc::new(Mutex::new(VecDeque::new()));
         let worker_gamepad_pulses = Arc::clone(&gamepad_pulses);
+        let direct_video_output =
+            Arc::new(DirectVideoOutput::new(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT));
+        let worker_direct_video_output = Arc::clone(&direct_video_output);
 
         std::thread::Builder::new()
             .name("green-vita-rtc".to_owned())
@@ -68,6 +72,7 @@ impl RtcWorker {
                         worker_latest_frame,
                         worker_latest_gamepad,
                         worker_gamepad_pulses,
+                        worker_direct_video_output,
                     )
                 })) {
                     Ok(Ok(())) => {}
@@ -94,6 +99,7 @@ impl RtcWorker {
             latest_frame,
             latest_gamepad,
             gamepad_pulses,
+            direct_video_output,
         })
     }
 
@@ -107,6 +113,10 @@ impl RtcWorker {
 
     pub fn take_latest_frame(&self) -> Option<(u64, DecodedFrame)> {
         self.latest_frame.lock().ok()?.take()
+    }
+
+    pub fn direct_video_output(&self) -> Arc<DirectVideoOutput> {
+        Arc::clone(&self.direct_video_output)
     }
 
     pub fn add_remote_candidate(&self, candidate: RTCIceCandidateInit) {
@@ -147,6 +157,7 @@ fn run_worker_thread(
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<GamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
+    direct_video_output: Arc<DirectVideoOutput>,
 ) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -155,7 +166,7 @@ fn run_worker_thread(
 
     runtime.block_on(async move {
         let peer = RtcPeer::new()?;
-        let mut session = RtcSession::new(peer).await?;
+        let mut session = RtcSession::new(peer, direct_video_output).await?;
 
         let offer = session.peer.create_offer()?;
         let answer_sdp =

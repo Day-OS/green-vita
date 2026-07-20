@@ -1,12 +1,13 @@
 use crate::app::{PollJob, poll_job};
 use crate::settings::Settings;
 use crate::streaming::rtc::worker::{RtcWorker, RtcWorkerEvent};
-use crate::streaming::video::DecodedFrame;
+use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use crate::{GamepadFrame, PointerEvent, Stream, StreamKind};
 use anyhow::Result;
 use bytes::Bytes;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
@@ -84,6 +85,10 @@ impl StreamingSession {
 
     pub(crate) fn video_size(&self) -> Option<(u32, u32)> {
         self.stream_video_size
+    }
+
+    pub(crate) fn direct_video_output(&self) -> Arc<DirectVideoOutput> {
+        self.rtc_worker.direct_video_output()
     }
 
     pub(crate) fn send_gamepad_frame(&mut self, mut frame: GamepadFrame, settings: &Settings) {

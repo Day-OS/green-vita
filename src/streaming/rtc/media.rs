@@ -1,10 +1,11 @@
 use crate::streaming::rtc::rtp;
-use crate::streaming::video::{DecodedFrame, DecoderConfig, VideoDecodeWorker};
+use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker};
 use anyhow::Result;
 use bytes::Bytes;
 use rtc::media_stream::MediaStreamTrackId;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
@@ -30,13 +31,16 @@ pub(super) struct VideoReceiver {
 }
 
 impl VideoReceiver {
-    pub(super) fn new(config: DecoderConfig) -> Result<Self> {
+    pub(super) fn new(
+        config: DecoderConfig,
+        direct_output: Arc<DirectVideoOutput>,
+    ) -> Result<Self> {
         Ok(Self {
             track_id: None,
             receiver_id: None,
             ssrc: None,
             rtp: rtp::VideoRtp::new(),
-            decoder: VideoDecodeWorker::spawn(config)?,
+            decoder: VideoDecodeWorker::spawn(config, direct_output)?,
             current_frame: None,
             latest_frame: None,
             next_frame_id: 0,

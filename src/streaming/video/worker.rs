@@ -1,6 +1,6 @@
 use super::decoder::HwVideoDecoder;
 use super::metrics;
-use super::{DecodedFrame, DecoderConfig};
+use super::{DecodedFrame, DecoderConfig, DirectVideoOutput, DirectVideoTargetGuard};
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, unbounded};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -43,16 +43,18 @@ pub struct VideoDecodeWorker {
 }
 
 impl VideoDecodeWorker {
-    pub fn spawn(config: DecoderConfig) -> Result<Self> {
+    pub fn spawn(config: DecoderConfig, direct_output: Arc<DirectVideoOutput>) -> Result<Self> {
         let decoder = config
             .create()
             .context("failed to create hardware H264 decoder")?;
+        direct_output.mark_decoder_ready();
         let (access_units, worker_access_units) = bounded(MAX_PENDING_ACCESS_UNITS);
         let (commands, worker_commands) = unbounded();
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
         let latest_result = Arc::new(Mutex::new(None));
         let worker_latest_result = Arc::clone(&latest_result);
+        let worker_direct_output = Arc::clone(&direct_output);
 
         std::thread::Builder::new()
             .name("green-vita-video-decode".to_owned())
@@ -64,6 +66,7 @@ impl VideoDecodeWorker {
                     worker_latest_result,
                     decoder,
                     config,
+                    worker_direct_output,
                 )
             })
             .context("failed to spawn video decode worker")?;
@@ -118,9 +121,10 @@ impl Drop for VideoDecodeWorker {
 fn decode_access_unit(
     decoder: &mut HwVideoDecoder,
     data: &[u8],
+    direct_target: super::VideoTextureTarget,
 ) -> std::thread::Result<Result<bool>> {
     let started_at = Instant::now();
-    let result = catch_unwind(AssertUnwindSafe(|| decoder.decode(data)));
+    let result = catch_unwind(AssertUnwindSafe(|| decoder.decode(data, direct_target)));
     metrics::record_decode(started_at.elapsed());
     result
 }
@@ -131,6 +135,7 @@ fn publish_decoded_frame(
     latest_result: &Mutex<Option<DecodeResult>>,
     access_unit: &QueuedAccessUnit,
     skipped_last_frame: &mut bool,
+    direct_target: DirectVideoTargetGuard<'_>,
 ) {
     let result_is_pending = latest_result.lock().is_ok_and(|result| result.is_some());
     if !access_units.is_empty() && result_is_pending && !*skipped_last_frame {
@@ -140,17 +145,14 @@ fn publish_decoded_frame(
     }
     *skipped_last_frame = false;
 
-    let copy_started_at = Instant::now();
-    let pixels = decoder.copy_frame_bytes();
-    metrics::record_copy(copy_started_at.elapsed());
+    let texture_index = direct_target.publish();
     metrics::record_pipeline_age(access_unit.queued_at.elapsed());
     publish_result(
         latest_result,
         Ok(DecodedFrame {
-            pixels,
+            texture_index,
             width: decoder.width,
             height: decoder.height,
-            pitch: decoder.pitch,
         }),
     );
 }
@@ -162,6 +164,7 @@ fn run_decode_loop(
     latest_result: Arc<Mutex<Option<DecodeResult>>>,
     initial_decoder: HwVideoDecoder,
     config: DecoderConfig,
+    direct_output: Arc<DirectVideoOutput>,
 ) {
     let mut decoder = Some(initial_decoder);
     let mut skipped_last_frame = false;
@@ -188,6 +191,7 @@ fn run_decode_loop(
                     &latest_result,
                     access_unit,
                     &mut skipped_last_frame,
+                    &direct_output,
                 );
             }
         }
@@ -202,6 +206,7 @@ fn decode_queued_access_unit(
     latest_result: &Mutex<Option<DecodeResult>>,
     access_unit: QueuedAccessUnit,
     skipped_last_frame: &mut bool,
+    direct_output: &DirectVideoOutput,
 ) {
     if access_unit.generation != generation.load(Ordering::Acquire) {
         return;
@@ -220,9 +225,16 @@ fn decode_queued_access_unit(
         }
     }
 
+    let Some(direct_target) = direct_output.lock_decode_target() else {
+        // Do not decode until the renderer has registered its two GXM textures. There is no
+        // legacy output buffer to copy from anymore.
+        metrics::record_skipped();
+        return;
+    };
     let decode_result = decode_access_unit(
         decoder.as_mut().expect("decoder recreated above"),
         &access_unit.data,
+        direct_target.target(),
     );
     if access_unit.generation != generation.load(Ordering::Acquire) {
         return;
@@ -237,6 +249,7 @@ fn decode_queued_access_unit(
                 latest_result,
                 &access_unit,
                 skipped_last_frame,
+                direct_target,
             );
         }
         Ok(Ok(false)) => {}

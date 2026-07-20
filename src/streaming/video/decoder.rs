@@ -1,9 +1,9 @@
 //! PS Vita hardware H.264 decoder (`sceVideodec`/`sceAvcdec`).
+use super::VideoTextureTarget;
 use super::memory::{CdramBlock, release_reserved_decoder_cdram};
 use super::metrics;
 use anyhow::{Result, bail};
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
 use vitasdk_sys::*;
 
 // The idea of reducing the reference frames came from MattKC on his Vanilla project
@@ -13,7 +13,6 @@ const AVCDEC_NUM_REF_FRAMES: u32 = 1;
 // decoder-to-texture traffic from roughly 2 MiB to 1 MiB per frame, which matters at 60 FPS.
 const OUTPUT_BYTES_PER_PIXEL: u32 = 2;
 const OUTPUT_PIXEL_FORMAT: u32 = SCE_AVCDEC_PIXELFORMAT_RGBA565 as u32;
-static DMAC_COPY_FALLBACK_REPORTED: AtomicBool = AtomicBool::new(false);
 
 struct AvcdecLibrary {
     module_loaded: bool,
@@ -91,10 +90,8 @@ fn frame_output_size(height: u32, pitch: u32) -> Result<u32> {
 
 pub struct HwVideoDecoder {
     decoder: AvcdecDecoder,
-    output: CdramBlock,
     _frame_memory: CdramBlock,
     _library: AvcdecLibrary,
-    output_len: u32,
     pub width: u32,
     pub height: u32,
     pub pitch: u32,
@@ -143,16 +140,10 @@ impl HwVideoDecoder {
             }
             let decoder = AvcdecDecoder(decoder_control);
 
-            let output_len = frame_output_size(output_height, output_width)?;
-            let output = CdramBlock::allocate("xcloud_hw_video_out", output_len)?;
-            metrics::record_decoder_output_memory(output_len, output.capacity);
-
             Ok(Self {
                 decoder,
-                output,
                 _frame_memory: frame_memory,
                 _library: library,
-                output_len,
                 width: output_width,
                 height: output_height,
                 pitch: 0,
@@ -160,39 +151,12 @@ impl HwVideoDecoder {
         }
     }
 
-    /// Borrows the hardware's own output buffer - copied exactly once, straight into the texture.
-    fn frame_bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.output.ptr, self.output_len as usize) }
-    }
-
-    /// Moves the non-cached AVCDEC output into an owned frame through the Vita DMA engine. Reading
-    /// that memory with a CPU memcpy is considerably slower than decoding the frame itself.
-    pub fn copy_frame_bytes(&self) -> Vec<u8> {
-        let len = self.output_len as usize;
-        let mut frame: Vec<u8> = Vec::with_capacity(len);
-        let ret = unsafe {
-            sceDmacMemcpy(
-                frame.as_mut_ptr().cast(),
-                self.output.ptr.cast(),
-                self.output_len,
-            )
-        };
-        if ret >= 0 {
-            unsafe {
-                frame.set_len(len);
-            }
-            return frame;
-        }
-
-        if !DMAC_COPY_FALLBACK_REPORTED.swap(true, Ordering::Relaxed) {
-            eprintln!("sceDmacMemcpy decoder copy failed ({ret:#x}); using CPU fallback");
-        }
-        frame.extend_from_slice(self.frame_bytes());
-        frame
-    }
-
     /// Decodes one Access Unit. Returns `false` if the hardware buffered it without producing a picture yet.
-    pub fn decode(&mut self, access_unit: &[u8]) -> Result<bool> {
+    pub fn decode(
+        &mut self,
+        access_unit: &[u8],
+        direct_target: VideoTextureTarget,
+    ) -> Result<bool> {
         unsafe {
             let au = SceAvcdecAu {
                 pts: SceVideodecTimeStamp {
@@ -209,11 +173,21 @@ impl HwVideoDecoder {
                 },
             };
 
+            let output_ptr = direct_target.ptr as *mut u8;
+            let output_pitch = direct_target.pitch / OUTPUT_BYTES_PER_PIXEL;
+            let output_capacity = direct_target.capacity;
+            if output_pitch < self.width {
+                bail!(
+                    "direct video texture pitch {output_pitch} is smaller than {}",
+                    self.width
+                );
+            }
+
             let mut picture = SceAvcdecPicture {
                 size: size_of::<SceAvcdecPicture>() as u32,
                 frame: SceAvcdecFrame {
                     pixelType: OUTPUT_PIXEL_FORMAT,
-                    framePitch: self.width,
+                    framePitch: output_pitch,
                     frameWidth: self.width,
                     frameHeight: self.height,
                     horizontalSize: self.width,
@@ -229,7 +203,7 @@ impl HwVideoDecoder {
                             reserved: [0; 14],
                         },
                     },
-                    pPicture: [self.output.ptr.cast(), std::ptr::null_mut()],
+                    pPicture: [output_ptr.cast(), std::ptr::null_mut()],
                 },
                 info: std::mem::zeroed(),
             };
@@ -250,14 +224,13 @@ impl HwVideoDecoder {
 
             // `framePitch` is in pixels, not bytes.
             let output_len = frame_output_size(self.height, picture.frame.framePitch)?;
-            if output_len > self.output.capacity {
+            if output_len > output_capacity {
                 bail!(
                     "sceAvcdecDecode produced pitch requiring {output_len} bytes, but output buffer has {} bytes",
-                    self.output.capacity
+                    output_capacity
                 );
             }
             self.pitch = picture.frame.framePitch * OUTPUT_BYTES_PER_PIXEL;
-            self.output_len = output_len;
             Ok(true)
         }
     }

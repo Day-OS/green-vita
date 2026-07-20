@@ -217,7 +217,7 @@ pub async fn run(mut app: App) -> Result<()> {
         if let Some(streaming) = app.state.streaming_mut() {
             audio_renderer.submit_packets(streaming.take_audio_packets());
         }
-        surface.upload_video_frame(app.state.streaming())?;
+        surface.sync_video_frame(app.state.streaming())?;
 
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
