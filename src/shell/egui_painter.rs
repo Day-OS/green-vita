@@ -107,16 +107,14 @@ impl SdlEguiPainter {
                 .pending_order
                 .iter()
                 .enumerate()
-                // The title screen deliberately creates its next backdrop one frame before
-                // displaying it. Prefer large textures even while they are still hidden so
-                // their synchronous upload cannot consume the crossfade itself.
+                .filter(|(_, texture_id)| visible_texture_ids.contains(texture_id))
+                // The pending backdrop is painted almost transparently for one frame, so it is
+                // visible to this scheduler and wins over the smaller title icons.
                 .max_by_key(|(_, texture_id)| {
-                    let area = self
-                        .pending_textures
+                    self.pending_textures
                         .get(texture_id)
                         .map(|delta| delta.image.width() * delta.image.height())
-                        .unwrap_or(0);
-                    (area, visible_texture_ids.contains(texture_id))
+                        .unwrap_or(0)
                 })
                 .map(|(index, _)| index)
             else {

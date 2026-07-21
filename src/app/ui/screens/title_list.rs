@@ -468,13 +468,20 @@ pub(crate) fn draw_title_background(ui: &mut egui::Ui, app: &App, theme: Theme) 
         return;
     };
 
+    let rect = ui.ctx().screen_rect();
     // The painter uploads the pending texture now, while the old background remains visible.
     // Only the following UI frame promotes it and starts the crossfade timer.
-    if fade.pending.is_some() {
+    if let Some((_, pending)) = &fade.pending {
+        draw_title_image_cover(
+            ui,
+            pending,
+            rect,
+            "title-background-pending",
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 1),
+        );
         ui.ctx().request_repaint();
     }
 
-    let rect = ui.ctx().screen_rect();
     const FADE_DURATION: Duration = Duration::from_millis(420);
     const IMAGE_ALPHA: u8 = 150;
     let linear_t =

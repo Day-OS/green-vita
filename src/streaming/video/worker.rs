@@ -128,7 +128,6 @@ fn run_decode_loop(
     direct_output: Arc<DirectVideoOutput>,
 ) {
     let mut decoder = Some(initial_decoder);
-    let mut skipped_last_frame = false;
 
     loop {
         select_biased! {
@@ -148,10 +147,8 @@ fn run_decode_loop(
                     &mut decoder,
                     config,
                     &generation,
-                    &access_units,
                     &latest_result,
                     access_unit,
-                    &mut skipped_last_frame,
                     &direct_output,
                 );
             }
@@ -163,10 +160,8 @@ fn decode_queued_access_unit(
     decoder: &mut Option<HwVideoDecoder>,
     config: DecoderConfig,
     generation: &AtomicU64,
-    access_units: &Receiver<QueuedAccessUnit>,
     latest_result: &Mutex<Option<DecodeResult>>,
     access_unit: QueuedAccessUnit,
-    skipped_last_frame: &mut bool,
     direct_output: &DirectVideoOutput,
 ) {
     if access_unit.generation != generation.load(Ordering::Acquire) {
@@ -211,16 +206,6 @@ fn decode_queued_access_unit(
     match decode_result {
         Ok(Ok(true)) => {
             metrics::METRICS.decoded.increment();
-            // Keep latency bounded: when both the decoder input and its published output are
-            // already pending, skip one frame instead of extending the pipeline.
-            let result_is_pending = latest_result.lock().is_ok_and(|result| result.is_some());
-            if !access_units.is_empty() && result_is_pending && !*skipped_last_frame {
-                *skipped_last_frame = true;
-                metrics::METRICS.skipped.increment();
-                return;
-            }
-            *skipped_last_frame = false;
-
             let texture_index = direct_target.publish();
             metrics::METRICS.pipeline_age_us.store(
                 metrics::micros(access_unit.queued_at.elapsed()),
