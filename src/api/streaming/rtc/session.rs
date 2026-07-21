@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
+const INITIAL_VIDEO_GRACE: Duration = Duration::from_millis(500);
+const INITIAL_VIDEO_KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
 
 pub(crate) struct RtcSessionConfig {
     pub stun_server: &'static str,
@@ -53,6 +55,8 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     video: VideoReceiver,
     audio: AudioReceiver,
     last_keyframe_request: Option<Instant>,
+    initial_video_watchdog_started_at: Option<Instant>,
+    last_initial_video_keyframe_request: Option<Instant>,
     pub status: String,
 }
 
@@ -75,6 +79,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             video,
             audio: AudioReceiver::new(config.audio_sample_rate, config.audio_payload_type),
             last_keyframe_request: None,
+            initial_video_watchdog_started_at: None,
+            last_initial_video_keyframe_request: None,
             status: "Negotiating WebRTC connection".to_owned(),
         })
     }
@@ -143,6 +149,10 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         {
             let _ = self.peer.handle_timeout(now);
         }
+        if self.initial_video_keyframe_due(now) {
+            eprintln!("No initial video RTP after WebRTC connected; requesting a keyframe");
+            keyframe_requested = true;
+        }
         self.request_keyframe(keyframe_requested, now);
         let provider_stats = self.backend.performance_summary();
         if let Some(status) = self.video.status(now, &provider_stats) {
@@ -151,6 +161,35 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         }
 
         Ok(gathered_candidates)
+    }
+
+    fn initial_video_keyframe_due(&mut self, now: Instant) -> bool {
+        if self.video.has_received_packet() {
+            self.initial_video_watchdog_started_at = None;
+            self.last_initial_video_keyframe_request = None;
+            return false;
+        }
+        if self.connection_state != RTCPeerConnectionState::Connected {
+            self.initial_video_watchdog_started_at = None;
+            self.last_initial_video_keyframe_request = None;
+            return false;
+        }
+
+        let connected_at = *self.initial_video_watchdog_started_at.get_or_insert(now);
+        if now.duration_since(connected_at) < INITIAL_VIDEO_GRACE {
+            return false;
+        }
+        if self
+            .last_initial_video_keyframe_request
+            .is_some_and(|requested_at| {
+                now.duration_since(requested_at) < INITIAL_VIDEO_KEYFRAME_INTERVAL
+            })
+        {
+            return false;
+        }
+
+        self.last_initial_video_keyframe_request = Some(now);
+        true
     }
 
     fn handle_peer_events(&mut self) -> Vec<RTCIceCandidateInit> {

@@ -26,6 +26,7 @@ pub(crate) struct VideoReceiver {
     decoder: VideoDecodeWorker,
     latest_frame: Option<(u64, DecodedFrame)>,
     next_frame_id: u64,
+    received_packet: bool,
     last_stats_report: Instant,
     stats: VideoStats,
 }
@@ -43,6 +44,7 @@ impl VideoReceiver {
             decoder: VideoDecodeWorker::spawn(config, direct_output)?,
             latest_frame: None,
             next_frame_id: 0,
+            received_packet: false,
             last_stats_report: Instant::now(),
             stats: VideoStats::default(),
         })
@@ -64,6 +66,7 @@ impl VideoReceiver {
     }
 
     pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
+        self.received_packet = true;
         let sample_stats = self.rtp.receive(&self.decoder, packet, keyframe_requested);
         self.stats.dropped = self
             .stats
@@ -99,6 +102,10 @@ impl VideoReceiver {
 
     pub(crate) fn take_new_frame(&mut self) -> Option<(u64, DecodedFrame)> {
         self.latest_frame.take()
+    }
+
+    pub(crate) fn has_received_packet(&self) -> bool {
+        self.received_packet
     }
 
     pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {
