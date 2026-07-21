@@ -46,6 +46,7 @@ pub(crate) struct ConnectingStream {
     pub(crate) stream: Stream,
     pub(crate) kind: StreamKind,
     pub(crate) target_id: String,
+    pub(crate) game_id: Option<String>,
     pub(crate) label: String,
     pub(crate) next_poll_at: Instant,
     pub(crate) wait_estimate: Option<(u64, Instant)>,
@@ -56,6 +57,7 @@ pub(crate) struct ConnectingStream {
 pub(crate) struct StreamStartTarget {
     pub(crate) kind: StreamKind,
     pub(crate) target_id: String,
+    pub(crate) game_id: Option<String>,
     pub(crate) label: String,
     pub(crate) return_selected: usize,
 }
@@ -111,6 +113,7 @@ impl App {
         self.start_stream_for_target(StreamStartTarget {
             kind: StreamKind::Home,
             target_id: console.server_id,
+            game_id: None,
             label,
             return_selected: selected,
         });
@@ -130,6 +133,7 @@ impl App {
                             stream,
                             kind: target.kind,
                             target_id: target.target_id,
+                            game_id: target.game_id,
                             label: target.label,
                             next_poll_at: Instant::now(),
                             wait_estimate: None,
@@ -214,9 +218,8 @@ impl App {
             Ok((stream, StreamState::Provisioned)) => {
                 session.stream = stream;
                 self.service.auth = MsalAuth::new();
-                let title_id =
-                    (session.kind == StreamKind::Cloud).then(|| session.target_id.clone());
-                match StreamingSession::start(
+                let title_id = session.game_id.clone();
+                match StreamingSession::start_xbox(
                     session.stream.clone(),
                     session.kind,
                     title_id,

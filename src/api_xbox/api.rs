@@ -1,7 +1,7 @@
 //! HTTP client for the xCloud/xHome streaming APIs: sessions, titles, consoles, wait times.
 
-use crate::xbox_api::auth::EndpointCredentials;
-use crate::xbox_api::stream::{StartStreamResponse, Stream};
+use crate::api_xbox::auth::EndpointCredentials;
+use crate::api_xbox::stream::{StartStreamResponse, Stream};
 use anyhow::{Context, Result};
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
@@ -202,7 +202,7 @@ impl ApiClient {
     }
 
     /// Shared HTTP+JSON path for both `kind`-routed requests above and `Stream`'s per-session
-    /// credential requests in `xbox_api::stream`.
+    /// credential requests in `api_xbox::stream`.
     pub(super) async fn request_json<T>(
         &self,
         credentials: &EndpointCredentials,

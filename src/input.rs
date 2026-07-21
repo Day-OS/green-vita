@@ -1,4 +1,4 @@
-use crate::streaming::control::input::{GamepadFrame, PointerEvent};
+use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::{AppCommand, InputCommand};
 use sdl2::controller::{Axis, Button, GameController};
 use sdl2::event::Event;

@@ -1,4 +1,4 @@
-use crate::streaming::video::VideoDecodeWorker;
+use crate::streaming::video::{HW_DECODE_HEIGHT, HW_DECODE_WIDTH, VideoDecodeWorker};
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -9,9 +9,9 @@ use rtc::rtp::codec::h264::H264Packet;
 use rtc::rtp::codec::opus::OpusPacket;
 use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-const OPUS_PAYLOAD_TYPE: u8 = 111;
 const MAX_PENDING_AUDIO_PACKETS: usize = 32;
 const MAX_H264_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
 const VIDEO_RTP_CLOCK_RATE: u32 = 90_000;
@@ -25,18 +25,20 @@ pub(super) struct VideoSampleStats {
 
 pub(super) struct AudioRtp {
     samples: SampleBuilder<OpusPacket>,
+    payload_type: u8,
 }
 
 impl AudioRtp {
-    pub(super) fn new(sample_rate: u32) -> Self {
+    pub(super) fn new(sample_rate: u32, payload_type: u8) -> Self {
         Self {
             samples: SampleBuilder::new(AUDIO_MAX_LATE_PACKETS, OpusPacket, sample_rate)
                 .with_max_time_delay(std::time::Duration::from_millis(80)),
+            payload_type,
         }
     }
 
     pub(super) fn receive(&mut self, packet: Packet, audio_packets: &mut Vec<Bytes>) {
-        if packet.header.payload_type != OPUS_PAYLOAD_TYPE {
+        if packet.header.payload_type != self.payload_type {
             return;
         }
 
@@ -228,7 +230,18 @@ impl VideoRtp {
             } => (data, marker_sequence),
         };
         let completed = self.pending.take().expect("assembled pending video frame");
-        crate::streaming::video::record_rtp_assembly(completed.first_packet_at.elapsed());
+        // Record both average and worst-case RTP assembly time for the stream HUD.
+        let assembly_us =
+            crate::streaming::video::metrics::micros(completed.first_packet_at.elapsed());
+        crate::streaming::video::metrics::METRICS
+            .rtp_assembly_sum_us
+            .fetch_add(assembly_us, Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .rtp_assembly_count
+            .fetch_add(1, Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .rtp_assembly_max_us
+            .fetch_max(assembly_us, Ordering::Relaxed);
         self.next_sequence = Some(marker_sequence.wrapping_add(1));
         stats.source_frame_duration_us = self.last_frame_timestamp.map(|previous| {
             u64::from(completed.timestamp.wrapping_sub(previous)) * 1_000_000
@@ -237,23 +250,23 @@ impl VideoRtp {
         self.last_frame_timestamp = Some(completed.timestamp);
 
         let unit = inspect_h264_access_unit(&data);
-        let sample_too_large = unit.resolution.is_some_and(|(width, height)| {
-            width > crate::HW_DECODE_WIDTH || height > crate::HW_DECODE_HEIGHT
-        });
+        let sample_too_large = unit
+            .resolution
+            .is_some_and(|(width, height)| width > HW_DECODE_WIDTH || height > HW_DECODE_HEIGHT);
         if sample_too_large {
             eprintln!(
                 "Dropping H264 access unit larger than decoder: {:?} > {}x{}",
-                unit.resolution,
-                crate::HW_DECODE_WIDTH,
-                crate::HW_DECODE_HEIGHT
+                unit.resolution, HW_DECODE_WIDTH, HW_DECODE_HEIGHT
             );
             self.stream_too_large = true;
-            resync_and_drop(
-                worker,
-                keyframe_requested,
-                &mut self.waiting_for_keyframe,
-                &mut stats,
-            );
+            // Flush queued decoder work once, then wait for a compatible IDR instead of feeding
+            // frames that the Vita hardware cannot decode.
+            *keyframe_requested = true;
+            if !self.waiting_for_keyframe {
+                worker.begin_resync();
+            }
+            self.waiting_for_keyframe = true;
+            stats.dropped = stats.dropped.saturating_add(1);
             return stats;
         }
         if self.stream_too_large {
@@ -287,20 +300,6 @@ impl VideoRtp {
 fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
     let distance = candidate.wrapping_sub(reference);
     distance != 0 && distance < (1 << 31)
-}
-
-fn resync_and_drop(
-    worker: &VideoDecodeWorker,
-    keyframe_requested: &mut bool,
-    video_waiting_for_keyframe: &mut bool,
-    stats: &mut VideoSampleStats,
-) {
-    *keyframe_requested = true;
-    if !*video_waiting_for_keyframe {
-        worker.begin_resync();
-    }
-    *video_waiting_for_keyframe = true;
-    stats.dropped = stats.dropped.saturating_add(1);
 }
 
 struct AccessUnitInfo {

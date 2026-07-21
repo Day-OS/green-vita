@@ -32,7 +32,9 @@ pub fn reserve_decoder_cdram() {
         };
         if uid >= 0 {
             RESERVED_CDRAM.store(uid, Ordering::Relaxed);
-            metrics::record_decoder_reservation(size);
+            metrics::DECODER_MEMORY
+                .reserved
+                .store(size, Ordering::Relaxed);
             eprintln!("Reserved {size} bytes of CDRAM for AVCDEC");
             return;
         }
@@ -45,7 +47,7 @@ pub fn reserve_decoder_cdram() {
 
 pub(super) fn release_reserved_decoder_cdram() {
     let uid = RESERVED_CDRAM.swap(0, Ordering::Relaxed);
-    metrics::record_decoder_reservation(0);
+    metrics::DECODER_MEMORY.reserved.store(0, Ordering::Relaxed);
     if uid > 0 {
         unsafe {
             sceKernelFreeMemBlock(uid);

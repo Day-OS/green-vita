@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-struct DeltaCounter {
+pub(crate) struct DeltaCounter {
     total: AtomicU64,
     reported: AtomicU64,
 }
@@ -14,7 +14,7 @@ impl DeltaCounter {
         }
     }
 
-    fn increment(&self) {
+    pub(crate) fn increment(&self) {
         self.total.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -24,22 +24,22 @@ impl DeltaCounter {
     }
 }
 
-struct VideoMetrics {
-    rtp_assembly_sum_us: AtomicU64,
-    rtp_assembly_count: AtomicU64,
-    rtp_assembly_max_us: AtomicU64,
-    decode_us: AtomicU64,
-    pipeline_age_us: AtomicU64,
-    decoded: DeltaCounter,
-    skipped: DeltaCounter,
-    presented: DeltaCounter,
-    replaced: DeltaCounter,
-    queue_full: DeltaCounter,
-    resyncs: AtomicU64,
-    resets: AtomicU64,
+pub(crate) struct VideoMetrics {
+    pub(crate) rtp_assembly_sum_us: AtomicU64,
+    pub(crate) rtp_assembly_count: AtomicU64,
+    pub(crate) rtp_assembly_max_us: AtomicU64,
+    pub(crate) decode_us: AtomicU64,
+    pub(crate) pipeline_age_us: AtomicU64,
+    pub(crate) decoded: DeltaCounter,
+    pub(crate) skipped: DeltaCounter,
+    pub(crate) presented: DeltaCounter,
+    pub(crate) replaced: DeltaCounter,
+    pub(crate) queue_full: DeltaCounter,
+    pub(crate) resyncs: AtomicU64,
+    pub(crate) resets: AtomicU64,
 }
 
-static METRICS: VideoMetrics = VideoMetrics {
+pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtp_assembly_sum_us: AtomicU64::new(0),
     rtp_assembly_count: AtomicU64::new(0),
     rtp_assembly_max_us: AtomicU64::new(0),
@@ -54,15 +54,15 @@ static METRICS: VideoMetrics = VideoMetrics {
     resets: AtomicU64::new(0),
 };
 
-struct DecoderMemoryMetrics {
-    frame_size: AtomicU32,
-    frame_capacity: AtomicU32,
-    output_size: AtomicU32,
-    output_capacity: AtomicU32,
-    reserved: AtomicU32,
+pub(crate) struct DecoderMemoryMetrics {
+    pub(crate) frame_size: AtomicU32,
+    pub(crate) frame_capacity: AtomicU32,
+    pub(crate) output_size: AtomicU32,
+    pub(crate) output_capacity: AtomicU32,
+    pub(crate) reserved: AtomicU32,
 }
 
-static DECODER_MEMORY: DecoderMemoryMetrics = DecoderMemoryMetrics {
+pub(crate) static DECODER_MEMORY: DecoderMemoryMetrics = DecoderMemoryMetrics {
     frame_size: AtomicU32::new(0),
     frame_capacity: AtomicU32::new(0),
     output_size: AtomicU32::new(0),
@@ -70,71 +70,8 @@ static DECODER_MEMORY: DecoderMemoryMetrics = DecoderMemoryMetrics {
     reserved: AtomicU32::new(0),
 };
 
-fn micros(duration: Duration) -> u64 {
+pub(crate) fn micros(duration: Duration) -> u64 {
     duration.as_micros().min(u64::MAX as u128) as u64
-}
-
-pub(crate) fn record_rtp_assembly(duration: Duration) {
-    let elapsed_us = micros(duration);
-    METRICS
-        .rtp_assembly_sum_us
-        .fetch_add(elapsed_us, Ordering::Relaxed);
-    METRICS.rtp_assembly_count.fetch_add(1, Ordering::Relaxed);
-    METRICS
-        .rtp_assembly_max_us
-        .fetch_max(elapsed_us, Ordering::Relaxed);
-}
-
-pub(super) fn record_decode(duration: Duration) {
-    METRICS.decode_us.store(micros(duration), Ordering::Relaxed);
-}
-
-pub(super) fn record_pipeline_age(duration: Duration) {
-    METRICS
-        .pipeline_age_us
-        .store(micros(duration), Ordering::Relaxed);
-}
-
-pub(super) fn record_decoded() {
-    METRICS.decoded.increment();
-}
-
-pub(super) fn record_skipped() {
-    METRICS.skipped.increment();
-}
-
-pub(super) fn record_replaced() {
-    METRICS.replaced.increment();
-}
-
-pub(super) fn record_queue_full() {
-    METRICS.queue_full.increment();
-}
-
-pub(super) fn record_resync() {
-    METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
-}
-
-pub(super) fn record_reset() {
-    METRICS.resets.fetch_add(1, Ordering::Relaxed);
-}
-
-pub(super) fn record_decoder_reservation(size: u32) {
-    DECODER_MEMORY.reserved.store(size, Ordering::Relaxed);
-}
-
-pub(super) fn record_decoder_frame_memory(size: u32, capacity: u32) {
-    DECODER_MEMORY.frame_size.store(size, Ordering::Relaxed);
-    DECODER_MEMORY
-        .frame_capacity
-        .store(capacity, Ordering::Relaxed);
-}
-
-pub(super) fn record_decoder_output_memory(size: u32, capacity: u32) {
-    DECODER_MEMORY.output_size.store(size, Ordering::Relaxed);
-    DECODER_MEMORY
-        .output_capacity
-        .store(capacity, Ordering::Relaxed);
 }
 
 pub(super) fn decoder_memory_summary(free_memory: &str) -> String {
@@ -146,10 +83,6 @@ pub(super) fn decoder_memory_summary(free_memory: &str) -> String {
         DECODER_MEMORY.output_capacity.load(Ordering::Relaxed),
         DECODER_MEMORY.reserved.load(Ordering::Relaxed),
     )
-}
-
-pub fn record_video_presented() {
-    METRICS.presented.increment();
 }
 
 pub fn video_performance_summary() -> String {

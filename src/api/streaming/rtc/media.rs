@@ -1,8 +1,9 @@
-use crate::streaming::rtc::rtp;
+use crate::api::streaming::rtc::rtp;
 use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker};
 use anyhow::Result;
 use bytes::Bytes;
 use rtc::media_stream::MediaStreamTrackId;
+use rtc::peer_connection::RTCPeerConnection;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::sync::Arc;
@@ -17,21 +18,20 @@ struct VideoStats {
     last_sample_duration_us: Option<u64>,
 }
 
-pub(super) struct VideoReceiver {
+pub(crate) struct VideoReceiver {
     track_id: Option<MediaStreamTrackId>,
     receiver_id: Option<RTCRtpReceiverId>,
     ssrc: Option<u32>,
     rtp: rtp::VideoRtp,
     decoder: VideoDecodeWorker,
-    current_frame: Option<DecodedFrame>,
-    latest_frame: Option<u64>,
+    latest_frame: Option<(u64, DecodedFrame)>,
     next_frame_id: u64,
     last_stats_report: Instant,
     stats: VideoStats,
 }
 
 impl VideoReceiver {
-    pub(super) fn new(
+    pub(crate) fn new(
         config: DecoderConfig,
         direct_output: Arc<DirectVideoOutput>,
     ) -> Result<Self> {
@@ -41,7 +41,6 @@ impl VideoReceiver {
             ssrc: None,
             rtp: rtp::VideoRtp::new(),
             decoder: VideoDecodeWorker::spawn(config, direct_output)?,
-            current_frame: None,
             latest_frame: None,
             next_frame_id: 0,
             last_stats_report: Instant::now(),
@@ -49,7 +48,7 @@ impl VideoReceiver {
         })
     }
 
-    pub(super) fn open(
+    pub(crate) fn open(
         &mut self,
         track_id: MediaStreamTrackId,
         receiver_id: RTCRtpReceiverId,
@@ -60,11 +59,11 @@ impl VideoReceiver {
         self.ssrc = Some(ssrc);
     }
 
-    pub(super) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
+    pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
         self.track_id.as_ref() == Some(track_id)
     }
 
-    pub(super) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
+    pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
         let sample_stats = self.rtp.receive(&self.decoder, packet, keyframe_requested);
         self.stats.dropped = self
             .stats
@@ -75,14 +74,13 @@ impl VideoReceiver {
         }
     }
 
-    pub(super) fn drain_decoder(&mut self, keyframe_requested: &mut bool) {
+    pub(crate) fn drain_decoder(&mut self, keyframe_requested: &mut bool) {
         let mut decode_errors = 0u64;
         while let Some(result) = self.decoder.try_recv() {
             match result {
                 Ok(frame) => {
                     self.next_frame_id = self.next_frame_id.wrapping_add(1);
-                    self.latest_frame = Some(self.next_frame_id);
-                    self.current_frame = Some(frame);
+                    self.latest_frame = Some((self.next_frame_id, frame));
                 }
                 Err(error) => {
                     eprintln!("Failed to decode H264 video frame: {error}");
@@ -99,31 +97,30 @@ impl VideoReceiver {
         }
     }
 
-    pub(super) fn take_new_frame(
-        &mut self,
-        last_sent_frame: &mut Option<u64>,
-    ) -> Option<(u64, DecodedFrame)> {
-        let frame_id = self.latest_frame?;
-        if Some(frame_id) == *last_sent_frame {
-            return None;
+    pub(crate) fn take_new_frame(&mut self) -> Option<(u64, DecodedFrame)> {
+        self.latest_frame.take()
+    }
+
+    pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {
+        // A PLI needs both identifiers recorded when the remote video track was opened.
+        if let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc)
+            && let Some(mut receiver) = peer.rtp_receiver(receiver_id)
+        {
+            let pli = rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
+                sender_ssrc: 0,
+                media_ssrc: ssrc,
+            };
+            let _ = receiver.write_rtcp(vec![Box::new(pli)]);
         }
-        let frame = self.current_frame.take()?;
-        *last_sent_frame = Some(frame_id);
-        Some((frame_id, frame))
     }
 
-    pub(super) fn rtcp_target(&self) -> Option<(RTCRtpReceiverId, u32)> {
-        Some((self.receiver_id?, self.ssrc?))
-    }
-
-    pub(super) fn status(&mut self, now: Instant) -> Option<String> {
+    pub(crate) fn status(&mut self, now: Instant, provider_stats: &str) -> Option<String> {
         if now.duration_since(self.last_stats_report) < STREAM_STATS_INTERVAL {
             return None;
         }
         self.last_stats_report = now;
 
         let performance = crate::streaming::video::video_performance_summary();
-        let input = crate::streaming::control::metrics::input_performance_summary();
         let memory = crate::streaming::video::decoder_memory_summary();
         let source_fps = self
             .stats
@@ -132,7 +129,7 @@ impl VideoReceiver {
             .map(|duration| 1_000_000 / duration)
             .unwrap_or(0);
         Some(format!(
-            "srcfps:{source_fps} {performance} {input} {memory} wait:{} drop:{} err:{}",
+            "srcfps:{source_fps} {performance} {provider_stats} {memory} wait:{} drop:{} err:{}",
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.dropped,
             self.stats.decode_errors,
@@ -140,34 +137,34 @@ impl VideoReceiver {
     }
 }
 
-pub(super) struct AudioReceiver {
+pub(crate) struct AudioReceiver {
     track_id: Option<MediaStreamTrackId>,
     rtp: rtp::AudioRtp,
     packets: Vec<Bytes>,
 }
 
 impl AudioReceiver {
-    pub(super) fn new(sample_rate: u32) -> Self {
+    pub(crate) fn new(sample_rate: u32, payload_type: u8) -> Self {
         Self {
             track_id: None,
-            rtp: rtp::AudioRtp::new(sample_rate),
+            rtp: rtp::AudioRtp::new(sample_rate, payload_type),
             packets: Vec::new(),
         }
     }
 
-    pub(super) fn open(&mut self, track_id: MediaStreamTrackId) {
+    pub(crate) fn open(&mut self, track_id: MediaStreamTrackId) {
         self.track_id = Some(track_id);
     }
 
-    pub(super) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
+    pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
         self.track_id.as_ref() == Some(track_id)
     }
 
-    pub(super) fn receive(&mut self, packet: Packet) {
+    pub(crate) fn receive(&mut self, packet: Packet) {
         self.rtp.receive(packet, &mut self.packets);
     }
 
-    pub(super) fn drain(&mut self) -> Vec<Bytes> {
+    pub(crate) fn drain(&mut self) -> Vec<Bytes> {
         std::mem::take(&mut self.packets)
     }
 }

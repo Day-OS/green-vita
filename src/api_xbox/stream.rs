@@ -1,5 +1,5 @@
-use crate::xbox_api::api::ApiClient;
-use crate::xbox_api::auth::{EndpointCredentials, MsalAuth};
+use crate::api_xbox::api::ApiClient;
+use crate::api_xbox::auth::{EndpointCredentials, MsalAuth};
 use anyhow::{Context, Result};
 use reqwest::Method;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
@@ -339,7 +339,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn serializes_local_ice_as_xbox_api_candidate_string() {
+    fn serializes_local_ice_as_api_xbox_candidate_string() {
         let candidate = RTCIceCandidateInit {
             candidate: "candidate:1 1 udp 1 192.0.2.10 5000 typ host".to_owned(),
             sdp_mid: Some(String::new()),

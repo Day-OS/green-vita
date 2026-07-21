@@ -3,6 +3,10 @@ use rtc::peer_connection::RTCPeerConnection;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::api::streaming::rtc::peer::RtcDataChannelConfig;
+use crate::api_xbox::streaming::rtc::protocol::ChannelIds;
+use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HandshakeStage {
     WaitingForChannels,
@@ -10,9 +14,9 @@ pub enum HandshakeStage {
     Ready,
 }
 
-pub fn handle_data_channel_message(
+pub(in crate::api_xbox::streaming) fn handle_data_channel_message(
     pc: &mut RTCPeerConnection,
-    ids: &crate::streaming::rtc::peer::ChannelIds,
+    ids: &ChannelIds,
     handshake_stage: &mut HandshakeStage,
     channel_id: RTCDataChannelId,
     data: &[u8],
@@ -39,12 +43,12 @@ pub fn handle_data_channel_message(
     *handshake_stage = HandshakeStage::Ready;
 }
 
-pub fn parse_server_video_size(
-    ids: &crate::streaming::rtc::peer::ChannelIds,
+pub(in crate::api_xbox::streaming) fn parse_server_video_size(
+    ids: &ChannelIds,
     channel_id: RTCDataChannelId,
     data: &[u8],
 ) -> Option<(u32, u32)> {
-    use crate::streaming::control::input::ReportType;
+    use crate::api_xbox::streaming::control::input::ReportType;
 
     if channel_id != ids.input || data.len() < 10 {
         return None;
@@ -58,31 +62,33 @@ pub fn parse_server_video_size(
     Some((width, height))
 }
 
-pub struct ChannelConfig {
-    pub label: &'static str,
-    pub protocol: &'static str,
-    pub ordered: bool,
-}
-
-pub const CHAT_CHANNEL: ChannelConfig = ChannelConfig {
+pub const CHAT_CHANNEL: RtcDataChannelConfig = RtcDataChannelConfig {
     label: "chat",
     protocol: "chatV1",
     ordered: true,
+    max_packet_life_time: None,
+    max_retransmits: None,
 };
-pub const CONTROL_CHANNEL: ChannelConfig = ChannelConfig {
+pub const CONTROL_CHANNEL: RtcDataChannelConfig = RtcDataChannelConfig {
     label: "control",
     protocol: "controlV1",
     ordered: true,
+    max_packet_life_time: None,
+    max_retransmits: None,
 };
-pub const INPUT_CHANNEL: ChannelConfig = ChannelConfig {
+pub const INPUT_CHANNEL: RtcDataChannelConfig = RtcDataChannelConfig {
     label: "input",
     protocol: "1.0",
-    ordered: true,
+    ordered: false,
+    max_packet_life_time: None,
+    max_retransmits: Some(0),
 };
-pub const MESSAGE_CHANNEL: ChannelConfig = ChannelConfig {
+pub const MESSAGE_CHANNEL: RtcDataChannelConfig = RtcDataChannelConfig {
     label: "message",
     protocol: "messageV1",
     ordered: true,
+    max_packet_life_time: None,
+    max_retransmits: None,
 };
 
 pub fn authorization_request() -> Value {
@@ -127,8 +133,8 @@ pub fn generate_message(path: &str, data: Value) -> Value {
 }
 
 pub fn startup_messages() -> Vec<Value> {
-    let width = crate::STREAM_WIDTH;
-    let height = crate::STREAM_HEIGHT;
+    let width = STREAM_WIDTH;
+    let height = STREAM_HEIGHT;
 
     vec![
         generate_message(

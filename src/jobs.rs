@@ -1,3 +1,5 @@
+//! Shared helpers for polling background Tokio tasks without blocking the UI loop.
+
 use anyhow::Result;
 use tokio::task::JoinHandle;
 

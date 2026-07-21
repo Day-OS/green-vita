@@ -1,23 +1,23 @@
 use vita_newlib_shims as _;
 
+mod api;
+mod api_xbox;
 mod app;
 mod i18n;
 mod input;
+mod jobs;
 mod safe_memory;
 mod settings;
 mod shell;
 mod streaming;
-mod xbox_api;
 
-use app::{App, AppCommand, AppState, InputCommand, NavigationCommand};
-use settings::Locale;
-use streaming::control::input::{GamepadFrame, PointerEvent};
-use streaming::rtc::session::{HW_DECODE_HEIGHT, HW_DECODE_WIDTH, STREAM_HEIGHT, STREAM_WIDTH};
-use xbox_api::api::{
+use api_xbox::api::{
     ApiClient, ApiClientConfig, Console, ConsolesResponse, StreamKind, WaitTimeResponse,
 };
-use xbox_api::auth::{DeviceCodeAuth, DeviceCodePoll, MsalAuth, StreamingCredentials, XboxProfile};
-use xbox_api::stream::{Stream, StreamState};
+use api_xbox::auth::{DeviceCodeAuth, DeviceCodePoll, MsalAuth, StreamingCredentials, XboxProfile};
+use api_xbox::stream::{Stream, StreamState};
+use app::{App, AppCommand, AppState, InputCommand, NavigationCommand};
+use settings::Locale;
 
 #[used]
 #[unsafe(export_name = "sceUserMainThreadStackSize")]

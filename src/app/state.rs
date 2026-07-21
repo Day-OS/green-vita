@@ -1,8 +1,9 @@
 use super::App;
 use super::stream_session::{ConnectingStream, StreamStartTarget, StreamingSession};
+use crate::api::catalog::Game;
 use crate::{
-    ConsolesResponse, DeviceCodeAuth, MsalAuth, Stream, StreamKind, StreamState,
-    StreamingCredentials, WaitTimeResponse, XboxProfile,
+    ConsolesResponse, DeviceCodeAuth, MsalAuth, Stream, StreamState, StreamingCredentials,
+    WaitTimeResponse, XboxProfile,
 };
 use anyhow::Result;
 use tokio::task::JoinHandle;
@@ -21,7 +22,7 @@ pub(crate) enum AppState {
     ModeSelect {
         selected: usize,
     },
-    LoadingTitles(JoinHandle<Result<serde_json::Value>>),
+    LoadingTitles(JoinHandle<Result<Vec<Game>>>),
     TitleList {
         selected: usize,
     },
@@ -78,12 +79,8 @@ impl AppState {
 
     pub(super) fn active_title_id(&self) -> Option<&str> {
         match self {
-            Self::StartingStream { target, .. } if target.kind == StreamKind::Cloud => {
-                Some(&target.target_id)
-            }
-            Self::Connecting { session, .. } if session.kind == StreamKind::Cloud => {
-                Some(&session.target_id)
-            }
+            Self::StartingStream { target, .. } => target.game_id.as_deref(),
+            Self::Connecting { session, .. } => session.game_id.as_deref(),
             Self::Streaming(streaming) => streaming.title_id.as_deref(),
             Self::Settings { return_to, .. } => return_to.active_title_id(),
             _ => None,

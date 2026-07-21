@@ -1,8 +1,6 @@
-//! Runs catalog/box-art fetches on one dedicated OS thread with its own tokio runtime, so a
-//! blocking connect/read can't freeze the SDL event loop. Fetched bytes are cached on disk under
-//! `ux0:data/xcloud-rust/cache/catalog-v1/{locale}/{title_id}/`.
+//! Provider-neutral metadata/image worker and on-disk game catalog cache.
 
-use crate::xbox_api::catalog;
+use super::{GameCatalogBackend, GameDetails, cache};
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased};
 use reqwest::Client;
@@ -12,9 +10,7 @@ use std::time::Duration;
 const MAX_PENDING_CATALOG_JOBS: usize = 4;
 const MAX_PENDING_PREFETCH_JOBS: usize = 4;
 const MAX_PENDING_CATALOG_RESULTS: usize = 8;
-const CATALOG_CACHE_DIR: &str = "ux0:data/xcloud-rust/cache/catalog-v1";
 
-/// Which of a title's images a fetched/decoded result is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageKind {
     Cover,
@@ -25,13 +21,13 @@ pub enum ImageKind {
 
 enum CatalogJob {
     Metadata {
-        title_id: String,
-        product_id: String,
+        game_id: String,
+        metadata_id: String,
         market: String,
         language: String,
     },
     Image {
-        title_id: String,
+        game_id: String,
         kind: ImageKind,
         url: String,
         cache_locale: Option<String>,
@@ -39,48 +35,62 @@ enum CatalogJob {
 }
 
 impl CatalogJob {
-    async fn run(self, client: &Client) -> CatalogResult {
+    async fn run(self, client: &Client, backend: &GameCatalogBackend) -> CatalogResult {
         match self {
-            CatalogJob::Metadata {
-                title_id,
-                product_id,
+            Self::Metadata {
+                game_id,
+                metadata_id,
                 market,
                 language,
             } => {
-                if let Some(details) = load_cached_metadata(&language, &title_id) {
+                if let Some(details) =
+                    load_cached_metadata(backend.cache_namespace(), &language, &game_id)
+                {
                     return CatalogResult::Metadata {
-                        title_id,
+                        game_id,
                         details: Some(details),
                     };
                 }
-                let result =
-                    catalog::fetch_title_details(client, &product_id, &market, &language).await;
+                let result = backend
+                    .fetch_details(client, &metadata_id, &market, &language)
+                    .await;
                 if let Err(error) = &result {
-                    eprintln!("Catalog worker: metadata for {title_id} failed: {error:#}");
+                    eprintln!("Catalog worker: metadata for {game_id} failed: {error:#}");
                 } else if let Ok(details) = &result
-                    && let Err(error) = save_cached_metadata(&language, &title_id, details)
+                    && let Err(error) = save_cached_metadata(
+                        backend.cache_namespace(),
+                        &language,
+                        &game_id,
+                        details,
+                    )
                 {
-                    eprintln!("Catalog worker: failed to cache metadata for {title_id}: {error:#}");
+                    eprintln!("Catalog worker: failed to cache metadata for {game_id}: {error:#}");
                 }
                 CatalogResult::Metadata {
-                    title_id,
+                    game_id,
                     details: result.ok(),
                 }
             }
-            CatalogJob::Image {
-                title_id,
+            Self::Image {
+                game_id,
                 kind,
                 url,
                 cache_locale,
             } => {
-                let result =
-                    load_or_fetch_image(client, &title_id, kind, &url, cache_locale.as_deref())
-                        .await;
+                let result = load_or_fetch_image(
+                    client,
+                    backend.cache_namespace(),
+                    &game_id,
+                    kind,
+                    &url,
+                    cache_locale.as_deref(),
+                )
+                .await;
                 if let Err(error) = &result {
-                    eprintln!("Catalog worker: {kind:?} image for {title_id} failed: {error:#}");
+                    eprintln!("Catalog worker: {kind:?} image for {game_id} failed: {error:#}");
                 }
                 CatalogResult::Image {
-                    title_id,
+                    game_id,
                     kind,
                     art: result.ok(),
                 }
@@ -91,11 +101,11 @@ impl CatalogJob {
 
 pub enum CatalogResult {
     Metadata {
-        title_id: String,
-        details: Option<catalog::TitleCatalogDetails>,
+        game_id: String,
+        details: Option<GameDetails>,
     },
     Image {
-        title_id: String,
+        game_id: String,
         kind: ImageKind,
         art: Option<(Vec<u8>, u32, u32)>,
     },
@@ -108,7 +118,7 @@ pub struct CatalogWorker {
 }
 
 impl CatalogWorker {
-    pub fn spawn() -> Self {
+    pub fn spawn(backend: GameCatalogBackend) -> Self {
         let (job_tx, job_rx) = bounded::<CatalogJob>(MAX_PENDING_CATALOG_JOBS);
         let (prefetch_tx, prefetch_rx) = bounded::<CatalogJob>(MAX_PENDING_PREFETCH_JOBS);
         let (result_tx, result_rx) = bounded::<CatalogResult>(MAX_PENDING_CATALOG_RESULTS);
@@ -134,7 +144,9 @@ impl CatalogWorker {
                 let Ok(job) = job else {
                     break;
                 };
-                let outcome = catch_unwind(AssertUnwindSafe(|| runtime.block_on(job.run(&client))));
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    runtime.block_on(job.run(&client, &backend))
+                }));
                 let result = match outcome {
                     Ok(result) => result,
                     Err(_) => {
@@ -157,14 +169,14 @@ impl CatalogWorker {
 
     pub fn request_metadata(
         &self,
-        title_id: String,
-        product_id: String,
+        game_id: String,
+        metadata_id: String,
         market: String,
         language: String,
     ) -> bool {
         self.send_job(CatalogJob::Metadata {
-            title_id,
-            product_id,
+            game_id,
+            metadata_id,
             market,
             language,
         })
@@ -172,29 +184,29 @@ impl CatalogWorker {
 
     pub fn prefetch_metadata(
         &self,
-        title_id: String,
-        product_id: String,
+        game_id: String,
+        metadata_id: String,
         market: String,
         language: String,
     ) -> bool {
         self.send_prefetch(CatalogJob::Metadata {
-            title_id,
-            product_id,
+            game_id,
+            metadata_id,
             market,
             language,
         })
     }
 
-    /// `cache_locale` is `None` for the avatar, the only image not cached on disk per-locale.
+    /// `cache_locale` is `None` for non-catalog images such as the profile avatar.
     pub fn request_image(
         &self,
-        title_id: String,
+        game_id: String,
         kind: ImageKind,
         url: String,
         cache_locale: Option<String>,
     ) -> bool {
         self.send_job(CatalogJob::Image {
-            title_id,
+            game_id,
             kind,
             url,
             cache_locale,
@@ -203,13 +215,13 @@ impl CatalogWorker {
 
     pub fn prefetch_image(
         &self,
-        title_id: String,
+        game_id: String,
         kind: ImageKind,
         url: String,
         cache_locale: Option<String>,
     ) -> bool {
         self.send_prefetch(CatalogJob::Image {
-            title_id,
+            game_id,
             kind,
             url,
             cache_locale,
@@ -256,46 +268,98 @@ impl ImageKind {
 
 async fn load_or_fetch_image(
     client: &Client,
-    title_id: &str,
+    namespace: &str,
+    game_id: &str,
     kind: ImageKind,
     url: &str,
     cache_locale: Option<&str>,
 ) -> Result<(Vec<u8>, u32, u32)> {
     let cache_path = cache_locale
         .zip(kind.cache_filename())
-        .map(|(locale, filename)| catalog_cache_path(locale, title_id, filename));
+        .map(|(locale, filename)| cache::game_path(namespace, locale, game_id, filename));
 
     if let Some(path) = cache_path.as_deref()
-        && let Some(bytes) = read_cached_file(path)
+        && let Some(bytes) = cache::read(path)
     {
         let (max_width, max_height, pad_to_bounds) = kind.dimensions();
-        match catalog::decode_image_rgba(&bytes, max_width, max_height, pad_to_bounds) {
+        match decode_image_rgba(&bytes, max_width, max_height, pad_to_bounds) {
             Ok(art) => return Ok(art),
             Err(error) => {
-                eprintln!("Catalog worker: invalid cached {kind:?} for {title_id}: {error:#}");
+                eprintln!("Catalog worker: invalid cached {kind:?} for {game_id}: {error:#}");
                 let _ = std::fs::remove_file(path);
             }
         }
     }
 
-    let bytes = catalog::fetch_image_bytes(client, url).await?;
+    let bytes = client
+        .get(url)
+        .send()
+        .await
+        .context("catalog image request failed")?
+        .error_for_status()
+        .context("catalog image request returned an error status")?
+        .bytes()
+        .await
+        .context("failed to read catalog image response body")?;
     let (max_width, max_height, pad_to_bounds) = kind.dimensions();
-    let art = catalog::decode_image_rgba(&bytes, max_width, max_height, pad_to_bounds)?;
+    let art = decode_image_rgba(&bytes, max_width, max_height, pad_to_bounds)?;
     if let Some(path) = cache_path.as_deref()
-        && let Err(error) = write_cached_file(path, &bytes)
+        && let Err(error) = cache::write(path, &bytes)
     {
-        eprintln!("Catalog worker: failed to cache {kind:?} for {title_id}: {error:#}");
+        eprintln!("Catalog worker: failed to cache {kind:?} for {game_id}: {error:#}");
     }
     Ok(art)
 }
 
-fn load_cached_metadata(locale: &str, title_id: &str) -> Option<catalog::TitleCatalogDetails> {
-    let path = catalog_cache_path(locale, title_id, "metadata.json");
-    let bytes = read_cached_file(&path)?;
+fn decode_image_rgba(
+    bytes: &[u8],
+    max_width: u32,
+    max_height: u32,
+    pad_to_bounds: bool,
+) -> Result<(Vec<u8>, u32, u32)> {
+    let image = image::load_from_memory(bytes).context("failed to decode catalog image")?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let scale = (max_width as f32 / width as f32)
+        .min(max_height as f32 / height as f32)
+        .min(1.0);
+    let resized_width = ((width as f32 * scale).round() as u32).max(1);
+    let resized_height = ((height as f32 * scale).round() as u32).max(1);
+    let resized = if (resized_width, resized_height) == (width, height) {
+        rgba
+    } else {
+        image::imageops::resize(
+            &rgba,
+            resized_width,
+            resized_height,
+            image::imageops::FilterType::Triangle,
+        )
+    };
+
+    if !pad_to_bounds {
+        return Ok((resized.into_raw(), resized_width, resized_height));
+    }
+
+    let mut canvas = vec![0; (max_width * max_height * 4) as usize];
+    let offset_x = (max_width - resized_width) / 2;
+    let offset_y = (max_height - resized_height) / 2;
+    let pixels = resized.as_raw();
+    for row in 0..resized_height {
+        let source = (row * resized_width * 4) as usize;
+        let destination = (((row + offset_y) * max_width + offset_x) * 4) as usize;
+        let length = (resized_width * 4) as usize;
+        canvas[destination..destination + length].copy_from_slice(&pixels[source..source + length]);
+    }
+    Ok((canvas, max_width, max_height))
+}
+
+fn load_cached_metadata(namespace: &str, locale: &str, game_id: &str) -> Option<GameDetails> {
+    let path = cache::game_path(namespace, locale, game_id, "metadata.json");
+    let bytes = cache::read(&path)?;
     match serde_json::from_slice(&bytes) {
         Ok(details) => Some(details),
         Err(error) => {
-            eprintln!("Catalog worker: invalid cached metadata for {title_id}: {error}");
+            eprintln!("Catalog worker: invalid cached metadata for {game_id}: {error}");
             let _ = std::fs::remove_file(path);
             None
         }
@@ -303,68 +367,16 @@ fn load_cached_metadata(locale: &str, title_id: &str) -> Option<catalog::TitleCa
 }
 
 fn save_cached_metadata(
+    namespace: &str,
     locale: &str,
-    title_id: &str,
-    details: &catalog::TitleCatalogDetails,
+    game_id: &str,
+    details: &GameDetails,
 ) -> Result<()> {
-    let path = catalog_cache_path(locale, title_id, "metadata.json");
+    let path = cache::game_path(namespace, locale, game_id, "metadata.json");
     let bytes = serde_json::to_vec(details).context("failed to serialize catalog metadata")?;
-    write_cached_file(&path, bytes)
-}
-
-fn read_cached_file(path: &str) -> Option<Vec<u8>> {
-    match std::fs::read(path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            eprintln!("Catalog worker: failed to read {path}: {error}");
-            None
-        }
-    }
-}
-
-fn write_cached_file(path: &str, bytes: impl AsRef<[u8]>) -> Result<()> {
-    let directory = path
-        .rsplit_once('/')
-        .map(|(directory, _)| directory)
-        .context("catalog cache path has no parent")?;
-    std::fs::create_dir_all(directory)
-        .with_context(|| format!("failed to create cache directory {directory}"))?;
-    crate::fs_utils::write_file_truncating(path, bytes)
-}
-
-fn catalog_cache_path(locale: &str, title_id: &str, filename: &str) -> String {
-    format!(
-        "{CATALOG_CACHE_DIR}/{}/{}/{}",
-        safe_cache_component(locale),
-        safe_cache_component(title_id),
-        filename
-    )
-}
-
-fn safe_cache_component(value: &str) -> String {
-    let sanitized: String = value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if sanitized.is_empty() {
-        "_".to_owned()
-    } else {
-        sanitized
-    }
+    cache::write(&path, bytes)
 }
 
 pub fn clear_catalog_cache() -> Result<()> {
-    match std::fs::remove_dir_all(CATALOG_CACHE_DIR) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to remove cache directory {CATALOG_CACHE_DIR}")),
-    }
+    cache::clear()
 }

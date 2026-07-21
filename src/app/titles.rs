@@ -1,91 +1,11 @@
 use super::image::{TitleImage, mask_to_circle};
 use super::{App, AppState};
-use crate::xbox_api::catalog::TitleCatalogDetails;
-use crate::xbox_api::catalog_worker::{CatalogResult, ImageKind, clear_catalog_cache};
+use crate::api::catalog::worker::{CatalogResult, ImageKind, clear_catalog_cache};
+use crate::api::catalog::{Game, GameDetails};
 use std::sync::Arc;
 
 const ICON_CACHE_RADIUS: usize = 16;
 const RESULTS_PER_TICK: usize = 2;
-
-#[derive(Clone)]
-pub(crate) struct CloudTitle {
-    pub(crate) title_id: String,
-    pub(crate) product_id: Option<String>,
-    pub(crate) details: Option<TitleCatalogDetails>,
-    pub(crate) icon: Option<Arc<TitleImage>>,
-    pub(crate) box_art: Option<Arc<TitleImage>>,
-    pub(crate) background: Option<Arc<TitleImage>>,
-}
-
-impl CloudTitle {
-    pub(crate) fn display_name(&self) -> &str {
-        self.details
-            .as_ref()
-            .and_then(|details| details.name.as_deref())
-            .unwrap_or(&self.title_id)
-    }
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct TitlesResponse {
-    #[serde(default)]
-    results: Vec<TitleEntry>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct TitleEntry {
-    #[serde(rename = "titleId")]
-    slug: Option<String>,
-    #[serde(default)]
-    details: TitleDetails,
-}
-
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-struct TitleDetails {
-    #[serde(rename = "productId")]
-    product_id: Option<String>,
-    #[serde(rename = "hasEntitlement", default)]
-    has_entitlement: bool,
-    #[serde(default)]
-    programs: Vec<String>,
-    #[serde(rename = "userSubscriptions", default)]
-    user_subscriptions: Vec<String>,
-}
-
-pub(super) fn extract_titles(value: &serde_json::Value) -> Vec<CloudTitle> {
-    let Ok(response) = serde_json::from_value::<TitlesResponse>(value.clone()) else {
-        return Vec::new();
-    };
-
-    let mut titles: Vec<CloudTitle> = response
-        .results
-        .into_iter()
-        .filter_map(|entry| {
-            let slug = entry.slug?;
-            let is_playable = entry.details.has_entitlement
-                || entry
-                    .details
-                    .programs
-                    .iter()
-                    .any(|program| entry.details.user_subscriptions.contains(program));
-            if !is_playable {
-                return None;
-            }
-            Some(CloudTitle {
-                title_id: slug,
-                product_id: entry.details.product_id,
-                details: None,
-                icon: None,
-                box_art: None,
-                background: None,
-            })
-        })
-        .collect();
-
-    titles.sort_by(|left, right| left.title_id.cmp(&right.title_id));
-    titles.dedup_by(|left, right| left.title_id == right.title_id);
-    titles
-}
 
 impl App {
     /// The pending-request set matching `kind`, so a fetch isn't re-queued while in flight.
@@ -135,10 +55,10 @@ impl App {
         let Some(title) = self.service.titles.get(selected) else {
             return;
         };
-        let title_id = title.title_id.clone();
+        let title_id = title.id.clone();
 
         if title.details.is_none() {
-            self.request_metadata_if_needed(&title_id, title.product_id.clone(), false);
+            self.request_metadata_if_needed(&title_id, title.metadata_id.clone(), false);
             return;
         }
 
@@ -175,9 +95,9 @@ impl App {
             .filter(|(index, _)| title_distance(*index, selected, title_count) <= ICON_CACHE_RADIUS)
             .filter(|(_, title)| title.details.is_none())
             .min_by_key(|(index, _)| title_distance(*index, selected, title_count))
-            .map(|(_, title)| (title.title_id.clone(), title.product_id.clone()));
-        if let Some((title_id, product_id)) = missing_metadata {
-            self.request_metadata_if_needed(&title_id, product_id, true);
+            .map(|(_, title)| (title.id.clone(), title.metadata_id.clone()));
+        if let Some((title_id, metadata_id)) = missing_metadata {
+            self.request_metadata_if_needed(&title_id, metadata_id, true);
         }
 
         let icon_pending = &self.service.icon_pending;
@@ -188,11 +108,11 @@ impl App {
             .enumerate()
             .filter(|(index, _)| title_distance(*index, selected, title_count) <= ICON_CACHE_RADIUS)
             .filter_map(|(index, title)| {
-                if title.icon.is_none() && !icon_pending.contains(&title.title_id) {
+                if title.icon.is_none() && !icon_pending.contains(&title.id) {
                     title.details.as_ref()?.icon_url.clone().map(|url| {
                         (
                             title_distance(index, selected, title_count),
-                            title.title_id.clone(),
+                            title.id.clone(),
                             url,
                         )
                     })
@@ -226,20 +146,20 @@ impl App {
     fn request_metadata_if_needed(
         &mut self,
         title_id: &str,
-        product_id: Option<String>,
+        metadata_id: Option<String>,
         prefetch: bool,
     ) {
         if self.service.title_detail_pending.contains(title_id) {
             return;
         }
-        let Some(product_id) = product_id else {
+        let Some(metadata_id) = metadata_id else {
             if let Some(title) = self
                 .service
                 .titles
                 .iter_mut()
-                .find(|title| title.title_id == title_id)
+                .find(|title| title.id == title_id)
             {
-                title.details = Some(TitleCatalogDetails::default());
+                title.details = Some(GameDetails::default());
             }
             return;
         };
@@ -248,14 +168,14 @@ impl App {
         let queued = if prefetch {
             self.service.catalog_worker.prefetch_metadata(
                 title_id.clone(),
-                product_id,
+                metadata_id,
                 self.settings.locale.market().to_owned(),
                 self.settings.locale.as_str().to_lowercase(),
             )
         } else {
             self.service.catalog_worker.request_metadata(
                 title_id.clone(),
-                product_id,
+                metadata_id,
                 self.settings.locale.market().to_owned(),
                 self.settings.locale.as_str().to_lowercase(),
             )
@@ -275,22 +195,18 @@ impl App {
                 break;
             };
             match result {
-                CatalogResult::Metadata { title_id, details } => {
-                    self.service.title_detail_pending.remove(&title_id);
+                CatalogResult::Metadata { game_id, details } => {
+                    self.service.title_detail_pending.remove(&game_id);
                     if let Some(title) = self
                         .service
                         .titles
                         .iter_mut()
-                        .find(|title| title.title_id == title_id)
+                        .find(|title| title.id == game_id)
                     {
                         title.details = Some(details.unwrap_or_default());
                     }
                 }
-                CatalogResult::Image {
-                    title_id,
-                    kind,
-                    art,
-                } => {
+                CatalogResult::Image { game_id, kind, art } => {
                     let image = art.map(|(rgba, width, height)| {
                         let mut image = TitleImage::new(rgba, width, height);
                         if kind == ImageKind::Avatar {
@@ -302,7 +218,7 @@ impl App {
                         self.service.avatar = image;
                         continue;
                     }
-                    self.image_pending_set(kind).remove(&title_id);
+                    self.image_pending_set(kind).remove(&game_id);
                     let selected = match &self.state {
                         AppState::TitleList { selected } => *selected,
                         _ => continue,
@@ -313,7 +229,7 @@ impl App {
                         .titles
                         .iter_mut()
                         .enumerate()
-                        .find(|(_, title)| title.title_id == title_id)
+                        .find(|(_, title)| title.id == game_id)
                     {
                         match kind {
                             ImageKind::Cover if index == selected => title.box_art = image,
@@ -335,7 +251,7 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn highlighted_title(&self) -> Option<&CloudTitle> {
+    pub(crate) fn highlighted_title(&self) -> Option<&Game> {
         let AppState::TitleList { selected } = &self.state else {
             return None;
         };

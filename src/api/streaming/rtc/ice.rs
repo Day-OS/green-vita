@@ -1,4 +1,3 @@
-use crate::streaming::rtc::STUN_SERVER;
 use anyhow::{Context, Result};
 use bytes::BytesMut;
 use rtc::peer_connection::RTCPeerConnection;
@@ -24,11 +23,15 @@ pub fn local_candidate(
     .context("failed to register local ICE candidate")
 }
 
-pub fn add_host_candidate(pc: &mut RTCPeerConnection, local_port: u16) -> Result<SocketAddr> {
+pub fn add_host_candidate(
+    pc: &mut RTCPeerConnection,
+    local_port: u16,
+    route_probe: &str,
+) -> Result<SocketAddr> {
     let probe = std::net::UdpSocket::bind("0.0.0.0:0")
         .context("failed to open a socket to discover the local IP")?;
     probe
-        .connect("8.8.8.8:80")
+        .connect(route_probe)
         .context("failed to determine local network route")?;
     let local_addr = probe
         .local_addr()
@@ -47,8 +50,9 @@ pub fn add_host_candidate(pc: &mut RTCPeerConnection, local_port: u16) -> Result
 pub async fn discover_server_reflexive_candidate(
     socket: &UdpSocket,
     local_addr: SocketAddr,
+    stun_server: &str,
 ) -> Result<Option<SocketAddr>> {
-    let stun_addr = tokio::net::lookup_host(STUN_SERVER)
+    let stun_addr = tokio::net::lookup_host(stun_server)
         .await
         .context("failed to resolve STUN server")?
         .next()
@@ -112,6 +116,7 @@ pub fn add_srflx_candidate(
     pc: &mut RTCPeerConnection,
     public_addr: SocketAddr,
     host_addr: SocketAddr,
+    stun_server: &str,
 ) -> Result<()> {
     let priority = (100u32 << 24) | (65535u32 << 8) | 255;
     let candidate = format!(
@@ -121,5 +126,5 @@ pub fn add_srflx_candidate(
         host_addr.ip(),
         host_addr.port(),
     );
-    local_candidate(pc, candidate, Some(format!("stun:{STUN_SERVER}")))
+    local_candidate(pc, candidate, Some(format!("stun:{stun_server}")))
 }

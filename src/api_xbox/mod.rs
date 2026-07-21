@@ -1,5 +1,6 @@
 pub mod api;
 pub mod auth;
 pub mod catalog;
-pub mod catalog_worker;
+pub mod game_catalog;
 pub mod stream;
+pub mod streaming;

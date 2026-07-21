@@ -4,6 +4,7 @@ use super::memory::{CdramBlock, release_reserved_decoder_cdram};
 use super::metrics;
 use anyhow::{Result, bail};
 use std::os::raw::c_void;
+use std::sync::atomic::Ordering;
 use vitasdk_sys::*;
 
 // The idea of reducing the reference frames came from MattKC on his Vanilla project
@@ -79,22 +80,12 @@ impl Drop for AvcdecDecoder {
     }
 }
 
-fn frame_output_size(height: u32, pitch: u32) -> Result<u32> {
-    let row_bytes = pitch
-        .checked_mul(OUTPUT_BYTES_PER_PIXEL)
-        .ok_or_else(|| anyhow::anyhow!("video frame pitch overflow: {pitch}"))?;
-    row_bytes
-        .checked_mul(height)
-        .ok_or_else(|| anyhow::anyhow!("video output size overflow: {row_bytes} * {height}"))
-}
-
 pub struct HwVideoDecoder {
     decoder: AvcdecDecoder,
     _frame_memory: CdramBlock,
     _library: AvcdecLibrary,
     pub width: u32,
     pub height: u32,
-    pub pitch: u32,
 }
 
 impl HwVideoDecoder {
@@ -124,7 +115,13 @@ impl HwVideoDecoder {
             release_reserved_decoder_cdram();
             let frame_memory =
                 CdramBlock::allocate("xcloud_hw_video_frame", decoder_info.frameMemSize)?;
-            metrics::record_decoder_frame_memory(decoder_info.frameMemSize, frame_memory.capacity);
+            // Keep the decoder's requested and allocated CDRAM visible in the stream HUD.
+            metrics::DECODER_MEMORY
+                .frame_size
+                .store(decoder_info.frameMemSize, Ordering::Relaxed);
+            metrics::DECODER_MEMORY
+                .frame_capacity
+                .store(frame_memory.capacity, Ordering::Relaxed);
 
             let mut decoder_control = SceAvcdecCtrl {
                 handle: 0,
@@ -146,7 +143,6 @@ impl HwVideoDecoder {
                 _library: library,
                 width: output_width,
                 height: output_height,
-                pitch: 0,
             })
         }
     }
@@ -222,15 +218,24 @@ impl HwVideoDecoder {
                 return Ok(false);
             }
 
-            // `framePitch` is in pixels, not bytes.
-            let output_len = frame_output_size(self.height, picture.frame.framePitch)?;
+            // `framePitch` is in pixels. Validate the complete byte size before trusting the
+            // decoder-provided pitch to write into the SDL texture.
+            let row_bytes = picture
+                .frame
+                .framePitch
+                .checked_mul(OUTPUT_BYTES_PER_PIXEL)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("video frame pitch overflow: {}", picture.frame.framePitch)
+                })?;
+            let output_len = row_bytes.checked_mul(self.height).ok_or_else(|| {
+                anyhow::anyhow!("video output size overflow: {row_bytes} * {}", self.height)
+            })?;
             if output_len > output_capacity {
                 bail!(
                     "sceAvcdecDecode produced pitch requiring {output_len} bytes, but output buffer has {} bytes",
                     output_capacity
                 );
             }
-            self.pitch = picture.frame.framePitch * OUTPUT_BYTES_PER_PIXEL;
             Ok(true)
         }
     }

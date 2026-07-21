@@ -1,13 +1,20 @@
 mod decoder;
 mod memory;
-mod metrics;
+pub(crate) mod metrics;
 mod worker;
 
+pub const STREAM_WIDTH: u32 = 1280;
+pub const STREAM_HEIGHT: u32 = 720;
+pub const HW_DECODE_WIDTH: u32 = 1280;
+pub const HW_DECODE_HEIGHT: u32 = 720;
+pub const HW_OUTPUT_WIDTH: u32 = 960;
+pub const HW_OUTPUT_HEIGHT: u32 = 544;
+
 pub use memory::{decoder_memory_summary, reserve_decoder_cdram};
-pub(crate) use metrics::record_rtp_assembly;
-pub use metrics::{record_video_presented, video_performance_summary};
+pub use metrics::video_performance_summary;
 pub use worker::VideoDecodeWorker;
 
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard};
 
 #[derive(Clone, Copy)]
@@ -67,7 +74,13 @@ impl DirectVideoOutput {
             let capacity = targets
                 .iter()
                 .fold(0u32, |total, target| total.saturating_add(target.capacity));
-            metrics::record_decoder_output_memory(frame_bytes.saturating_mul(2), capacity);
+            // Store the requested and actually allocated texture memory for the stream HUD.
+            metrics::DECODER_MEMORY
+                .output_size
+                .store(frame_bytes.saturating_mul(2), Ordering::Relaxed);
+            metrics::DECODER_MEMORY
+                .output_capacity
+                .store(capacity, Ordering::Relaxed);
             state.targets = Some(targets);
             state.displayed = None;
             state.pending = None;
@@ -76,7 +89,12 @@ impl DirectVideoOutput {
 
     pub(crate) fn clear_targets(&self) {
         if let Ok(mut state) = self.state.lock() {
-            metrics::record_decoder_output_memory(0, 0);
+            metrics::DECODER_MEMORY
+                .output_size
+                .store(0, Ordering::Relaxed);
+            metrics::DECODER_MEMORY
+                .output_capacity
+                .store(0, Ordering::Relaxed);
             state.targets = None;
             state.displayed = None;
             state.pending = None;
@@ -113,10 +131,6 @@ pub(super) struct DirectVideoTargetGuard<'a> {
 }
 
 impl DirectVideoTargetGuard<'_> {
-    pub(super) fn target(&self) -> VideoTextureTarget {
-        self.target
-    }
-
     pub(super) fn publish(mut self) -> usize {
         self.state.pending = Some(self.index);
         self.index
@@ -125,8 +139,6 @@ impl DirectVideoTargetGuard<'_> {
 
 pub struct DecodedFrame {
     pub texture_index: usize,
-    pub width: u32,
-    pub height: u32,
 }
 
 #[derive(Clone, Copy)]

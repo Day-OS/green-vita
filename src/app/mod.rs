@@ -1,16 +1,15 @@
 pub mod command;
 mod entry;
 mod image;
-mod jobs;
 mod service;
 mod state;
 mod stream_session;
 mod titles;
 pub(crate) mod ui;
 
+pub(crate) use crate::jobs::{PollJob, poll_job};
 pub use command::{AppCommand, InputCommand, NavigationCommand};
 pub use image::TitleImage;
-pub(crate) use jobs::{PollJob, poll_job};
 pub(crate) use state::AppState;
 pub(crate) use stream_session::{StreamStartTarget, StreamingSession, describe_stream_state};
 

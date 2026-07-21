@@ -106,7 +106,19 @@ impl SdlEguiPainter {
             let Some(index) = self
                 .pending_order
                 .iter()
-                .position(|texture_id| visible_texture_ids.contains(texture_id))
+                .enumerate()
+                // The title screen deliberately creates its next backdrop one frame before
+                // displaying it. Prefer large textures even while they are still hidden so
+                // their synchronous upload cannot consume the crossfade itself.
+                .max_by_key(|(_, texture_id)| {
+                    let area = self
+                        .pending_textures
+                        .get(texture_id)
+                        .map(|delta| delta.image.width() * delta.image.height())
+                        .unwrap_or(0);
+                    (area, visible_texture_ids.contains(texture_id))
+                })
+                .map(|(index, _)| index)
             else {
                 break;
             };

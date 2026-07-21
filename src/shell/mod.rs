@@ -12,7 +12,8 @@ use crate::input::{
     read_gamepad_frame,
 };
 use crate::streaming::audio::AudioRenderer;
-use crate::{App, AppState, InputCommand, NavigationCommand, STREAM_HEIGHT, STREAM_WIDTH};
+use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH};
+use crate::{App, AppState, InputCommand, NavigationCommand};
 use anyhow::{Context, Result};
 use sdl2::event::Event;
 use std::time::{Duration, Instant};

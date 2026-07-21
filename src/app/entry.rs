@@ -1,7 +1,7 @@
 use super::stream_session::cleanup_active_sessions;
-use super::titles::extract_titles;
 use super::{App, AppState, PollJob, poll_job};
-use crate::xbox_api::catalog_worker::ImageKind;
+use crate::api::catalog::Game;
+use crate::api::catalog::worker::ImageKind;
 use crate::{
     DeviceCodeAuth, DeviceCodePoll, MsalAuth, StreamKind, StreamingCredentials, XboxProfile,
 };
@@ -41,9 +41,9 @@ impl App {
     fn enter_entrypoint(&mut self, kind: StreamKind) -> Result<()> {
         match kind {
             StreamKind::Cloud => {
-                let api = self.service.api.clone();
+                let catalog = self.service.catalog_backend.clone();
                 self.set_state(AppState::LoadingTitles(tokio::spawn(async move {
-                    api.get_titles().await
+                    catalog.load_games().await
                 })));
             }
             StreamKind::Home => {
@@ -145,6 +145,7 @@ impl App {
                 self.service.api.config.cloud = credentials.cloud;
                 self.service.api.config.cloud_f2p = credentials.cloud_f2p;
                 self.service.auth = auth;
+                self.service.refresh_xcloud_catalog_backend();
                 if let Some(profile) = profile {
                     self.service.gamertag = profile.gamertag;
                     self.service.gamerscore = profile.gamerscore;
@@ -171,11 +172,11 @@ impl App {
         }
     }
 
-    async fn pump_titles(&mut self, job: JoinHandle<Result<serde_json::Value>>) {
+    async fn pump_titles(&mut self, job: JoinHandle<Result<Vec<Game>>>) {
         match poll_job(job).await {
             PollJob::Pending(job) => self.state = AppState::LoadingTitles(job),
-            PollJob::Done(Ok(response)) => {
-                self.service.titles = extract_titles(&response);
+            PollJob::Done(Ok(games)) => {
+                self.service.titles = games;
                 self.set_state(AppState::TitleList { selected: 0 });
             }
             PollJob::Done(Err(error)) => {

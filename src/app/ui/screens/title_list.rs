@@ -26,7 +26,7 @@ fn filtered_title_indices(app: &App) -> Vec<usize> {
         .filter_map(|(index, title)| {
             (query.is_empty()
                 || contains_case_insensitive(title.display_name(), query)
-                || contains_case_insensitive(&title.title_id, query))
+                || contains_case_insensitive(&title.id, query))
             .then_some(index)
         })
         .collect()
@@ -375,7 +375,7 @@ fn initial_groups(app: &App, filtered: &[usize]) -> Vec<(usize, String)> {
         let Some(title) = app.service.titles.get(index) else {
             continue;
         };
-        let initial = title_initial(&title.title_id);
+        let initial = title_initial(title.display_name());
         if groups
             .last()
             .is_none_or(|(_, previous): &(usize, String)| *previous != initial)
@@ -408,11 +408,11 @@ fn adjacent_initial_group(
 
 #[derive(Clone)]
 struct BackgroundFade {
-    current_key: usize,
+    current_game_id: String,
     current: Arc<TitleImage>,
     previous: Option<Arc<TitleImage>>,
-    pending: Option<(usize, Arc<TitleImage>)>,
-    changed_at: f64,
+    pending: Option<(String, Arc<TitleImage>)>,
+    changed_at: Instant,
 }
 
 pub(crate) fn draw_title_background(ui: &mut egui::Ui, app: &App, theme: Theme) {
@@ -422,40 +422,36 @@ pub(crate) fn draw_title_background(ui: &mut egui::Ui, app: &App, theme: Theme) 
     if let Some(background) = title.background.as_ref() {
         background.texture(ui.ctx(), "title-background");
     }
-    let now = ui.input(|input| input.time);
     let fade_id = egui::Id::new("title_background_fade");
-    let mut needs_repaint = false;
     let fade = ui.ctx().data_mut(|data| {
         let existing = data.get_temp::<BackgroundFade>(fade_id);
         let fade = match (title.background.as_ref(), existing) {
             (Some(background), Some(mut fade)) => {
-                let key = Arc::as_ptr(background) as usize;
-                if fade.current_key == key {
+                if fade.current_game_id == title.id {
                     fade.pending = None;
                 } else if fade
                     .pending
                     .as_ref()
-                    .is_some_and(|(pending_key, _)| *pending_key == key)
+                    .is_some_and(|(game_id, _)| game_id == &title.id)
                 {
-                    let (_, next) = fade
+                    let (_, background) = fade
                         .pending
                         .take()
                         .expect("pending background checked above");
-                    fade.previous = Some(std::mem::replace(&mut fade.current, next));
-                    fade.current_key = key;
-                    fade.changed_at = now;
+                    fade.previous = Some(std::mem::replace(&mut fade.current, background));
+                    fade.current_game_id.clone_from(&title.id);
+                    fade.changed_at = Instant::now();
                 } else {
-                    fade.pending = Some((key, Arc::clone(background)));
-                    needs_repaint = true;
+                    fade.pending = Some((title.id.clone(), Arc::clone(background)));
                 }
                 Some(fade)
             }
             (Some(background), None) => Some(BackgroundFade {
-                current_key: Arc::as_ptr(background) as usize,
+                current_game_id: title.id.clone(),
                 current: Arc::clone(background),
                 previous: None,
                 pending: None,
-                changed_at: now,
+                changed_at: Instant::now(),
             }),
             (None, Some(mut fade)) => {
                 fade.pending = None;
@@ -468,21 +464,28 @@ pub(crate) fn draw_title_background(ui: &mut egui::Ui, app: &App, theme: Theme) 
         }
         fade
     });
-    if needs_repaint {
-        ui.ctx().request_repaint();
-    }
     let Some(mut fade) = fade else {
         return;
     };
 
-    let rect = ui.ctx().screen_rect();
-    const FADE_SECONDS: f64 = 0.28;
-    const IMAGE_ALPHA: u8 = 150;
-    let fade_t = ((now - fade.changed_at) / FADE_SECONDS).clamp(0.0, 1.0) as f32;
+    // The painter uploads the pending texture now, while the old background remains visible.
+    // Only the following UI frame promotes it and starts the crossfade timer.
+    if fade.pending.is_some() {
+        ui.ctx().request_repaint();
+    }
 
-    if fade_t >= 1.0 && fade.previous.take().is_some() {
+    let rect = ui.ctx().screen_rect();
+    const FADE_DURATION: Duration = Duration::from_millis(420);
+    const IMAGE_ALPHA: u8 = 150;
+    let linear_t =
+        (fade.changed_at.elapsed().as_secs_f32() / FADE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+    let fade_t = linear_t * linear_t * (3.0 - 2.0 * linear_t);
+
+    if linear_t >= 1.0 && fade.previous.take().is_some() {
         ui.ctx()
             .data_mut(|data| data.insert_temp(fade_id, fade.clone()));
+    } else if fade.previous.is_some() {
+        ui.ctx().request_repaint_after(Duration::from_millis(16));
     }
 
     let current_alpha = if fade.previous.is_some() {
@@ -501,7 +504,6 @@ pub(crate) fn draw_title_background(ui: &mut egui::Ui, app: &App, theme: Theme) 
                 "title-background-previous",
                 egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha),
             );
-            ui.ctx().request_repaint();
         }
     }
     draw_title_image_cover(
@@ -576,11 +578,13 @@ impl App {
                 let Some(title) = self.service.titles.get(selected).cloned() else {
                     return Ok(());
                 };
-                let target_id = title.title_id;
+                let game_id = title.id;
+                let target_id = title.launch_id;
                 self.start_stream_for_target(StreamStartTarget {
                     kind: StreamKind::Cloud,
                     label: format!("cloud title {target_id}"),
                     target_id,
+                    game_id: Some(game_id),
                     return_selected: selected,
                 });
             }

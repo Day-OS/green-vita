@@ -1,6 +1,6 @@
 use super::decoder::HwVideoDecoder;
 use super::metrics;
-use super::{DecodedFrame, DecoderConfig, DirectVideoOutput, DirectVideoTargetGuard};
+use super::{DecodedFrame, DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, unbounded};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -88,7 +88,7 @@ impl VideoDecodeWorker {
         match self.access_units.try_send(access_unit) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
-                metrics::record_queue_full();
+                metrics::METRICS.queue_full.increment();
                 false
             }
             Err(TrySendError::Disconnected(_)) => false,
@@ -97,13 +97,13 @@ impl VideoDecodeWorker {
 
     pub fn reset_decoder(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
-        metrics::record_reset();
+        metrics::METRICS.resets.fetch_add(1, Ordering::Relaxed);
         let _ = self.commands.send(DecoderCommand::Reset);
     }
 
     pub fn begin_resync(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
-        metrics::record_resync();
+        metrics::METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
         let _ = self.commands.send(DecoderCommand::Resync);
     }
 
@@ -116,45 +116,6 @@ impl Drop for VideoDecodeWorker {
     fn drop(&mut self) {
         let _ = self.commands.send(DecoderCommand::Stop);
     }
-}
-
-fn decode_access_unit(
-    decoder: &mut HwVideoDecoder,
-    data: &[u8],
-    direct_target: super::VideoTextureTarget,
-) -> std::thread::Result<Result<bool>> {
-    let started_at = Instant::now();
-    let result = catch_unwind(AssertUnwindSafe(|| decoder.decode(data, direct_target)));
-    metrics::record_decode(started_at.elapsed());
-    result
-}
-
-fn publish_decoded_frame(
-    decoder: &HwVideoDecoder,
-    access_units: &Receiver<QueuedAccessUnit>,
-    latest_result: &Mutex<Option<DecodeResult>>,
-    access_unit: &QueuedAccessUnit,
-    skipped_last_frame: &mut bool,
-    direct_target: DirectVideoTargetGuard<'_>,
-) {
-    let result_is_pending = latest_result.lock().is_ok_and(|result| result.is_some());
-    if !access_units.is_empty() && result_is_pending && !*skipped_last_frame {
-        *skipped_last_frame = true;
-        metrics::record_skipped();
-        return;
-    }
-    *skipped_last_frame = false;
-
-    let texture_index = direct_target.publish();
-    metrics::record_pipeline_age(access_unit.queued_at.elapsed());
-    publish_result(
-        latest_result,
-        Ok(DecodedFrame {
-            texture_index,
-            width: decoder.width,
-            height: decoder.height,
-        }),
-    );
 }
 
 fn run_decode_loop(
@@ -228,13 +189,20 @@ fn decode_queued_access_unit(
     let Some(direct_target) = direct_output.lock_decode_target() else {
         // Do not decode until the renderer has registered its two GXM textures. There is no
         // legacy output buffer to copy from anymore.
-        metrics::record_skipped();
+        metrics::METRICS.skipped.increment();
         return;
     };
-    let decode_result = decode_access_unit(
-        decoder.as_mut().expect("decoder recreated above"),
-        &access_unit.data,
-        direct_target.target(),
+    // Measure the hardware call and contain an unexpected decoder panic inside its worker.
+    let decode_started_at = Instant::now();
+    let decode_result = catch_unwind(AssertUnwindSafe(|| {
+        decoder
+            .as_mut()
+            .expect("decoder recreated above")
+            .decode(&access_unit.data, direct_target.target)
+    }));
+    metrics::METRICS.decode_us.store(
+        metrics::micros(decode_started_at.elapsed()),
+        Ordering::Relaxed,
     );
     if access_unit.generation != generation.load(Ordering::Acquire) {
         return;
@@ -242,15 +210,23 @@ fn decode_queued_access_unit(
 
     match decode_result {
         Ok(Ok(true)) => {
-            metrics::record_decoded();
-            publish_decoded_frame(
-                decoder.as_ref().expect("decoder exists after decode"),
-                access_units,
-                latest_result,
-                &access_unit,
-                skipped_last_frame,
-                direct_target,
+            metrics::METRICS.decoded.increment();
+            // Keep latency bounded: when both the decoder input and its published output are
+            // already pending, skip one frame instead of extending the pipeline.
+            let result_is_pending = latest_result.lock().is_ok_and(|result| result.is_some());
+            if !access_units.is_empty() && result_is_pending && !*skipped_last_frame {
+                *skipped_last_frame = true;
+                metrics::METRICS.skipped.increment();
+                return;
+            }
+            *skipped_last_frame = false;
+
+            let texture_index = direct_target.publish();
+            metrics::METRICS.pipeline_age_us.store(
+                metrics::micros(access_unit.queued_at.elapsed()),
+                Ordering::Relaxed,
             );
+            publish_result(latest_result, Ok(DecodedFrame { texture_index }));
         }
         Ok(Ok(false)) => {}
         Ok(Err(error)) => {
@@ -272,6 +248,6 @@ fn publish_result(slot: &Mutex<Option<DecodeResult>>, result: DecodeResult) {
     if let Ok(mut latest) = slot.lock()
         && latest.replace(result).is_some()
     {
-        metrics::record_replaced();
+        metrics::METRICS.replaced.increment();
     }
 }

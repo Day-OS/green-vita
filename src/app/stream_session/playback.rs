@@ -1,4 +1,4 @@
-use crate::StreamKind;
+use crate::app::stream_session::session::StreamReturnTarget;
 use crate::app::{App, AppState};
 use anyhow::Result;
 
@@ -8,7 +8,7 @@ impl App {
             return Ok(());
         };
 
-        let (closed, error) = streaming.drain_worker_events();
+        let (closed, error) = streaming.drain_backend_events();
         if let Some(error) = error {
             self.stop_stream_with_error("error-webrtc-session", error.to_string())
                 .await;
@@ -22,9 +22,7 @@ impl App {
         let Some(streaming) = self.state.streaming_mut() else {
             return Ok(());
         };
-        streaming.post_local_ice().await;
-        streaming.poll_remote_ice().await;
-        if let Some(code) = streaming.keep_alive().await {
+        if let Some(code) = streaming.maintain_backend().await {
             self.stop_stream_with_error("error-stream-ended", code)
                 .await;
         }
@@ -34,30 +32,29 @@ impl App {
     async fn stop_stream_with_error(&mut self, reason_key: &'static str, error: String) {
         let state = std::mem::replace(&mut self.state, AppState::ModeSelect { selected: 0 });
         if let Some(streaming) = state.into_streaming() {
-            let _ = streaming.stream.stop().await;
+            let _ = streaming.stop().await;
         }
         self.set_localized_error_screen(reason_key, error);
     }
 
     pub(in crate::app) async fn exit_stream(&mut self) {
         let state = std::mem::replace(&mut self.state, AppState::ModeSelect { selected: 0 });
-        let return_kind = if let Some(streaming) = state.into_streaming() {
-            let kind = streaming.kind;
-            let return_selected = streaming.return_selected;
-            let session_id = streaming.stream.session_id.clone();
-            eprintln!("Exiting stream: stopping session {session_id}...");
-            match streaming.stream.stop().await {
-                Ok(response) => eprintln!("Stopped session {session_id}: {response}"),
-                Err(error) => eprintln!("Failed to stop session {session_id}: {error:#}"),
+        let return_target = if let Some(streaming) = state.into_streaming() {
+            let return_target = streaming.return_target;
+            let description = streaming.backend_description();
+            eprintln!("Exiting stream: stopping {description}...");
+            match streaming.stop().await {
+                Ok(()) => {}
+                Err(error) => eprintln!("Failed to stop {description}: {error:#}"),
             }
-            (kind, return_selected)
+            return_target
         } else {
             self.set_state(AppState::ModeSelect { selected: 0 });
             return;
         };
-        self.set_state(match return_kind {
-            (StreamKind::Cloud, selected) => AppState::TitleList { selected },
-            (StreamKind::Home, selected) => AppState::ConsoleList { selected },
+        self.set_state(match return_target {
+            StreamReturnTarget::Titles(selected) => AppState::TitleList { selected },
+            StreamReturnTarget::Consoles(selected) => AppState::ConsoleList { selected },
         });
     }
 }

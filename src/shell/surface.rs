@@ -73,8 +73,6 @@ impl VitaSurface {
         if frame_id == self.last_frame_id {
             return Ok(());
         }
-        let width = frame.width;
-        let height = frame.height;
         let index = frame.texture_index;
         if index >= 2 {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
@@ -83,9 +81,9 @@ impl VitaSurface {
             output.mark_displayed(index);
         }
         self.displayed_video_texture = Some(index);
-        self.video_width = width;
-        self.video_height = height;
-        crate::streaming::video::record_video_presented();
+        crate::streaming::video::metrics::METRICS
+            .presented
+            .increment();
         self.last_frame_id = frame_id;
         Ok(())
     }

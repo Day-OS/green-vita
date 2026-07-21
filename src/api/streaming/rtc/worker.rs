@@ -1,14 +1,16 @@
-use crate::Stream;
-use crate::streaming::control::input::{GamepadFrame, PointerEvent};
-use crate::streaming::rtc::peer::RtcPeer;
-use crate::streaming::rtc::session::{HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH, RtcSession};
-use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
+use crate::api::streaming::rtc::session::{RtcSession, RtcSessionConfig};
+use crate::streaming::input::{GamepadFrame, PointerEvent};
+use crate::streaming::input_metrics;
+use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use rtc::peer_connection::RTCPeerConnection;
+use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::state::RTCPeerConnectionState;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,10 +18,19 @@ use std::time::{Duration, Instant};
 const PUMP_SLEEP: Duration = Duration::from_millis(1);
 const PUMP_ERROR_SLEEP: Duration = Duration::from_millis(100);
 const GAMEPAD_PULSE_DURATION: Duration = Duration::from_millis(100);
+const GAMEPAD_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_PENDING_COMMANDS: usize = 16;
 const MAX_PENDING_EVENTS: usize = 32;
 const MAX_PENDING_AUDIO_BATCHES: usize = 16;
 const SDP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(45);
+
+pub(crate) trait RtcWorkerProvider: Send + 'static {
+    type Protocol: super::session::RtcSessionBackend;
+
+    fn create_peer(&self) -> Result<(RTCPeerConnection, Self::Protocol)>;
+    fn session_config(&self) -> RtcSessionConfig;
+    async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String>;
+}
 
 pub enum RtcWorkerEvent {
     LocalCandidates(Vec<RTCIceCandidateInit>),
@@ -51,7 +62,7 @@ pub struct RtcWorker {
 }
 
 impl RtcWorker {
-    pub fn spawn(stream: Stream) -> Result<Self> {
+    pub(crate) fn spawn<P: RtcWorkerProvider>(provider: P) -> Result<Self> {
         let (commands_tx, commands_rx) = sync_channel(MAX_PENDING_COMMANDS);
         let (events_tx, events_rx) = sync_channel(MAX_PENDING_EVENTS);
         let (audio_tx, audio_rx) = sync_channel(MAX_PENDING_AUDIO_BATCHES);
@@ -70,7 +81,7 @@ impl RtcWorker {
             .spawn(move || {
                 match catch_unwind(AssertUnwindSafe(|| {
                     run_worker_thread(
-                        stream,
+                        provider,
                         commands_rx,
                         events_tx.clone(),
                         audio_tx,
@@ -157,8 +168,8 @@ impl Drop for RtcWorker {
     }
 }
 
-fn run_worker_thread(
-    stream: Stream,
+fn run_worker_thread<P: RtcWorkerProvider>(
+    provider: P,
     commands_rx: Receiver<RtcWorkerCommand>,
     events_tx: SyncSender<RtcWorkerEvent>,
     audio_tx: SyncSender<Vec<Bytes>>,
@@ -173,15 +184,16 @@ fn run_worker_thread(
         .context("failed to build RTC worker runtime")?;
 
     runtime.block_on(async move {
-        let peer = RtcPeer::new()?;
-        let mut session = RtcSession::new(peer, direct_video_output).await?;
+        let (peer, backend) = provider.create_peer()?;
+        let config = provider.session_config();
+        let mut session = RtcSession::new(peer, backend, config, direct_video_output).await?;
 
-        let offer = session.peer.create_offer()?;
+        let offer = session.create_offer()?;
         let answer_sdp =
-            tokio::time::timeout(SDP_NEGOTIATION_TIMEOUT, stream.send_sdp_offer(&offer.sdp))
+            tokio::time::timeout(SDP_NEGOTIATION_TIMEOUT, provider.exchange_sdp(&offer))
                 .await
-                .context("timed out waiting for xCloud SDP answer")??;
-        session.peer.set_remote_answer(answer_sdp)?;
+                .context("timed out waiting for RTC SDP answer")??;
+        session.set_remote_answer(answer_sdp)?;
 
         send_lossy(
             &events_tx,
@@ -203,8 +215,8 @@ fn run_worker_thread(
     })
 }
 
-async fn run_session(
-    mut session: RtcSession,
+async fn run_session<B: super::session::RtcSessionBackend>(
+    mut session: RtcSession<B>,
     commands_rx: Receiver<RtcWorkerCommand>,
     events_tx: SyncSender<RtcWorkerEvent>,
     audio_tx: SyncSender<Vec<Bytes>>,
@@ -212,16 +224,16 @@ async fn run_session(
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
 ) -> Result<()> {
-    let mut last_frame_sent = None;
     let mut last_status = session.status.clone();
     let mut last_connection_state = session.connection_state;
-    let mut last_server_video_size = session.server_video_size;
+    let mut last_server_video_size = session.server_video_size();
     let mut consecutive_pump_errors = 0u32;
     let mut active_gamepad_pulse: Option<(GamepadFrame, Instant)> = None;
+    let mut last_gamepad_sent: Option<(GamepadFrame, Instant)> = None;
 
     loop {
         if !drain_commands(&mut session, &commands_rx) {
-            let _ = session.peer.close();
+            let _ = session.close();
             return Ok(());
         }
         let pulses = gamepad_pulses
@@ -242,11 +254,11 @@ async fn run_session(
                 active_gamepad_pulse = None;
                 // A pulse must have a distinct release packet even when normal controller input
                 // is temporarily suppressed (for example, until Confirm is released).
-                if let Some(sampled) = latest {
-                    send_sampled_gamepad_frame(&mut session, sampled);
-                } else {
-                    let _ = session.send_gamepad_frame(GamepadFrame::default());
-                }
+                let sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
+                    frame: GamepadFrame::default(),
+                    sampled_at: Instant::now(),
+                });
+                send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, true);
             } else if pulse_started || latest.is_some() {
                 let mut sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
@@ -255,10 +267,15 @@ async fn run_session(
                 // Guide/Nexus is currently the only pulsed input. Keep it asserted while normal
                 // gamepad frames continue to flow instead of immediately overwriting the press.
                 sampled.frame.nexus = sampled.frame.nexus.max(pulse.nexus);
-                send_sampled_gamepad_frame(&mut session, sampled);
+                send_sampled_gamepad_frame(
+                    &mut session,
+                    sampled,
+                    &mut last_gamepad_sent,
+                    pulse_started,
+                );
             }
         } else if let Some(sampled) = latest {
-            send_sampled_gamepad_frame(&mut session, sampled);
+            send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, false);
         }
 
         let local_candidates = match session.pump().await {
@@ -296,7 +313,7 @@ async fn run_session(
             send_lossy(&audio_tx, audio_packets);
         }
 
-        if let Some(frame) = session.take_new_video_frame(&mut last_frame_sent)
+        if let Some(frame) = session.take_new_video_frame()
             && let Ok(mut latest) = latest_frame.lock()
         {
             *latest = Some(frame);
@@ -313,10 +330,11 @@ async fn run_session(
             );
         }
 
-        if session.server_video_size != last_server_video_size
-            && let Some((width, height)) = session.server_video_size
+        let server_video_size = session.server_video_size();
+        if server_video_size != last_server_video_size
+            && let Some((width, height)) = server_video_size
         {
-            last_server_video_size = session.server_video_size;
+            last_server_video_size = server_video_size;
             send_lossy(&events_tx, RtcWorkerEvent::VideoResolution(width, height));
         }
 
@@ -329,13 +347,38 @@ async fn run_session(
     }
 }
 
-fn send_sampled_gamepad_frame(session: &mut RtcSession, sampled: SampledGamepadFrame) {
-    if session.send_gamepad_frame(sampled.frame) {
-        crate::streaming::control::metrics::record_gamepad_send_age(sampled.sampled_at.elapsed());
+fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
+    session: &mut RtcSession<B>,
+    sampled: SampledGamepadFrame,
+    last_sent: &mut Option<(GamepadFrame, Instant)>,
+    force: bool,
+) {
+    let now = Instant::now();
+    let unchanged_and_fresh = last_sent.as_ref().is_some_and(|(previous, sent_at)| {
+        *previous == sampled.frame && now.duration_since(*sent_at) < GAMEPAD_REFRESH_INTERVAL
+    });
+    if !force && unchanged_and_fresh {
+        return;
+    }
+
+    if session.send_gamepad_frame(sampled.frame.clone()) {
+        *last_sent = Some((sampled.frame, now));
+        // Capture how old the newest controller sample was when it reached the RTC channel.
+        input_metrics::GAMEPAD_SEND_AGE_US.store(
+            sampled
+                .sampled_at
+                .elapsed()
+                .as_micros()
+                .min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
     }
 }
 
-fn drain_commands(session: &mut RtcSession, commands_rx: &Receiver<RtcWorkerCommand>) -> bool {
+fn drain_commands<B: super::session::RtcSessionBackend>(
+    session: &mut RtcSession<B>,
+    commands_rx: &Receiver<RtcWorkerCommand>,
+) -> bool {
     loop {
         match commands_rx.try_recv() {
             Ok(RtcWorkerCommand::AddRemoteCandidate(candidate)) => {

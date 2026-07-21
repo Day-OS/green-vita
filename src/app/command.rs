@@ -174,7 +174,7 @@ impl App {
                 .service
                 .titles
                 .get(selected)
-                .map(|title| title.title_id.clone()),
+                .map(|title| title.id.clone()),
             AppState::StartingStream { .. }
             | AppState::Connecting { .. }
             | AppState::Streaming(_) => self.state.active_title_id().map(str::to_owned),
