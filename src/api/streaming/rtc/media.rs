@@ -16,6 +16,7 @@ struct VideoStats {
     dropped: u64,
     decode_errors: u64,
     last_sample_duration_us: Option<u64>,
+    encoded_resolution: Option<(u32, u32)>,
 }
 
 pub(crate) struct VideoReceiver {
@@ -23,9 +24,10 @@ pub(crate) struct VideoReceiver {
     receiver_id: Option<RTCRtpReceiverId>,
     ssrc: Option<u32>,
     rtp: rtp::VideoRtp,
-    decoder: VideoDecodeWorker,
-    latest_frame: Option<(u64, DecodedFrame)>,
+    pub(crate) decoder: VideoDecodeWorker,
+    pub(crate) latest_frame: Option<(u64, DecodedFrame)>,
     next_frame_id: u64,
+    pub(crate) received_packet: bool,
     last_stats_report: Instant,
     stats: VideoStats,
 }
@@ -43,6 +45,7 @@ impl VideoReceiver {
             decoder: VideoDecodeWorker::spawn(config, direct_output)?,
             latest_frame: None,
             next_frame_id: 0,
+            received_packet: false,
             last_stats_report: Instant::now(),
             stats: VideoStats::default(),
         })
@@ -64,6 +67,7 @@ impl VideoReceiver {
     }
 
     pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
+        self.received_packet = true;
         let sample_stats = self.rtp.receive(&self.decoder, packet, keyframe_requested);
         self.stats.dropped = self
             .stats
@@ -72,11 +76,20 @@ impl VideoReceiver {
         if sample_stats.source_frame_duration_us.is_some() {
             self.stats.last_sample_duration_us = sample_stats.source_frame_duration_us;
         }
+        if sample_stats.encoded_resolution.is_some() {
+            self.stats.encoded_resolution = sample_stats.encoded_resolution;
+        }
     }
 
     pub(crate) fn drain_decoder(&mut self, keyframe_requested: &mut bool) {
         let mut decode_errors = 0u64;
-        while let Some(result) = self.decoder.try_recv() {
+        while let Some(result) = self
+            .decoder
+            .latest_result
+            .lock()
+            .ok()
+            .and_then(|mut latest| latest.take())
+        {
             match result {
                 Ok(frame) => {
                     self.next_frame_id = self.next_frame_id.wrapping_add(1);
@@ -97,10 +110,6 @@ impl VideoReceiver {
         }
     }
 
-    pub(crate) fn take_new_frame(&mut self) -> Option<(u64, DecodedFrame)> {
-        self.latest_frame.take()
-    }
-
     pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {
         // A PLI needs both identifiers recorded when the remote video track was opened.
         if let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc)
@@ -114,22 +123,26 @@ impl VideoReceiver {
         }
     }
 
-    pub(crate) fn status(&mut self, now: Instant, provider_stats: &str) -> Option<String> {
+    pub(crate) fn status(&mut self, now: Instant) -> Option<String> {
         if now.duration_since(self.last_stats_report) < STREAM_STATS_INTERVAL {
             return None;
         }
         self.last_stats_report = now;
 
         let performance = crate::streaming::video::video_performance_summary();
-        let memory = crate::streaming::video::decoder_memory_summary();
         let source_fps = self
             .stats
             .last_sample_duration_us
             .filter(|duration| *duration > 0)
             .map(|duration| 1_000_000 / duration)
             .unwrap_or(0);
+        let encoded_resolution = self
+            .stats
+            .encoded_resolution
+            .map(|(width, height)| format!("{width}x{height}"))
+            .unwrap_or_else(|| "?".to_owned());
         Some(format!(
-            "srcfps:{source_fps} {performance} {provider_stats} {memory} wait:{} drop:{} err:{}",
+            "enc:{encoded_resolution} srcfps:{source_fps} {performance} wait:{} drop:{} err:{}",
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.dropped,
             self.stats.decode_errors,
@@ -140,7 +153,7 @@ impl VideoReceiver {
 pub(crate) struct AudioReceiver {
     track_id: Option<MediaStreamTrackId>,
     rtp: rtp::AudioRtp,
-    packets: Vec<Bytes>,
+    pub(crate) packets: Vec<Bytes>,
 }
 
 impl AudioReceiver {
@@ -162,9 +175,5 @@ impl AudioReceiver {
 
     pub(crate) fn receive(&mut self, packet: Packet) {
         self.rtp.receive(packet, &mut self.packets);
-    }
-
-    pub(crate) fn drain(&mut self) -> Vec<Bytes> {
-        std::mem::take(&mut self.packets)
     }
 }

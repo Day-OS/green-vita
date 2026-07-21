@@ -5,7 +5,7 @@ use std::ptr::NonNull;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 
 pub const AUDIO_SAMPLE_RATE: i32 = 48_000;
-pub const AUDIO_CHANNELS: usize = 2;
+const AUDIO_CHANNELS: usize = 2;
 
 const AUDIO_BYTES_PER_SECOND: u32 = AUDIO_SAMPLE_RATE as u32 * AUDIO_CHANNELS as u32 * 2;
 const MAX_QUEUED_AUDIO_BYTES: u32 = AUDIO_BYTES_PER_SECOND * 240 / 1_000;

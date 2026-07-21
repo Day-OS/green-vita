@@ -1,4 +1,3 @@
-use super::metrics;
 use anyhow::{Result, bail};
 use std::ffi::CString;
 use std::os::raw::c_void;
@@ -32,9 +31,6 @@ pub fn reserve_decoder_cdram() {
         };
         if uid >= 0 {
             RESERVED_CDRAM.store(uid, Ordering::Relaxed);
-            metrics::DECODER_MEMORY
-                .reserved
-                .store(size, Ordering::Relaxed);
             eprintln!("Reserved {size} bytes of CDRAM for AVCDEC");
             return;
         }
@@ -47,16 +43,11 @@ pub fn reserve_decoder_cdram() {
 
 pub(super) fn release_reserved_decoder_cdram() {
     let uid = RESERVED_CDRAM.swap(0, Ordering::Relaxed);
-    metrics::DECODER_MEMORY.reserved.store(0, Ordering::Relaxed);
     if uid > 0 {
         unsafe {
             sceKernelFreeMemBlock(uid);
         }
     }
-}
-
-pub fn decoder_memory_summary() -> String {
-    metrics::decoder_memory_summary(&free_memory_summary())
 }
 
 fn free_memory_summary() -> String {
@@ -81,7 +72,6 @@ fn free_memory_summary() -> String {
 pub(super) struct CdramBlock {
     uid: SceUID,
     pub(super) ptr: *mut u8,
-    pub(super) capacity: u32,
 }
 
 impl CdramBlock {
@@ -124,7 +114,6 @@ impl CdramBlock {
         Ok(Self {
             uid,
             ptr: base.cast(),
-            capacity,
         })
     }
 }

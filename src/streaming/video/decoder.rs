@@ -1,10 +1,8 @@
 //! PS Vita hardware H.264 decoder (`sceVideodec`/`sceAvcdec`).
-use super::VideoTextureTarget;
 use super::memory::{CdramBlock, release_reserved_decoder_cdram};
-use super::metrics;
+use super::{DecoderConfig, VideoTextureTarget};
 use anyhow::{Result, bail};
 use std::os::raw::c_void;
-use std::sync::atomic::Ordering;
 use vitasdk_sys::*;
 
 // The idea of reducing the reference frames came from MattKC on his Vanilla project
@@ -84,23 +82,18 @@ pub struct HwVideoDecoder {
     decoder: AvcdecDecoder,
     _frame_memory: CdramBlock,
     _library: AvcdecLibrary,
-    pub width: u32,
-    pub height: u32,
+    width: u32,
+    height: u32,
 }
 
 impl HwVideoDecoder {
-    pub fn new(
-        decode_width: u32,
-        decode_height: u32,
-        output_width: u32,
-        output_height: u32,
-    ) -> Result<Self> {
+    pub fn new(config: DecoderConfig) -> Result<Self> {
         unsafe {
-            let library = AvcdecLibrary::initialize(decode_width, decode_height)?;
+            let library = AvcdecLibrary::initialize(config.decode_width, config.decode_height)?;
 
             let query = SceAvcdecQueryDecoderInfo {
-                horizontal: decode_width,
-                vertical: decode_height,
+                horizontal: config.decode_width,
+                vertical: config.decode_height,
                 numOfRefFrames: AVCDEC_NUM_REF_FRAMES,
             };
             let mut decoder_info = SceAvcdecDecoderInfo { frameMemSize: 0 };
@@ -115,14 +108,6 @@ impl HwVideoDecoder {
             release_reserved_decoder_cdram();
             let frame_memory =
                 CdramBlock::allocate("xcloud_hw_video_frame", decoder_info.frameMemSize)?;
-            // Keep the decoder's requested and allocated CDRAM visible in the stream HUD.
-            metrics::DECODER_MEMORY
-                .frame_size
-                .store(decoder_info.frameMemSize, Ordering::Relaxed);
-            metrics::DECODER_MEMORY
-                .frame_capacity
-                .store(frame_memory.capacity, Ordering::Relaxed);
-
             let mut decoder_control = SceAvcdecCtrl {
                 handle: 0,
                 frameBuf: SceAvcdecBuf {
@@ -141,8 +126,8 @@ impl HwVideoDecoder {
                 decoder,
                 _frame_memory: frame_memory,
                 _library: library,
-                width: output_width,
-                height: output_height,
+                width: config.output_width,
+                height: config.output_height,
             })
         }
     }

@@ -8,7 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-const MAX_PENDING_ACCESS_UNITS: usize = 1;
+// Faster streams arrive in larger bursts. Keep the normal 30 fps limit small, but
+// allow enough room for roughly 100 ms of compressed video near the observed 55 fps.
+const MIN_PENDING_ACCESS_UNITS: usize = 2;
+const MAX_PENDING_ACCESS_UNITS: usize = 6;
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
@@ -18,52 +21,45 @@ struct QueuedAccessUnit {
 
 enum DecoderCommand {
     Reset,
-    Resync,
     Stop,
 }
 
-type DecodeResult = Result<DecodedFrame, String>;
-
-impl DecoderConfig {
-    fn create(self) -> Result<HwVideoDecoder> {
-        HwVideoDecoder::new(
-            self.decode_width,
-            self.decode_height,
-            self.output_width,
-            self.output_height,
-        )
-    }
-}
+pub(crate) type DecodeResult = Result<DecodedFrame, String>;
 
 pub struct VideoDecodeWorker {
     access_units: Sender<QueuedAccessUnit>,
     commands: Sender<DecoderCommand>,
     generation: Arc<AtomicU64>,
-    latest_result: Arc<Mutex<Option<DecodeResult>>>,
+    pub(crate) latest_result: Arc<Mutex<Option<DecodeResult>>>,
+    pub(crate) result_ready: Arc<tokio::sync::Notify>,
 }
 
 impl VideoDecodeWorker {
     pub fn spawn(config: DecoderConfig, direct_output: Arc<DirectVideoOutput>) -> Result<Self> {
-        let decoder = config
-            .create()
-            .context("failed to create hardware H264 decoder")?;
-        direct_output.mark_decoder_ready();
+        let decoder =
+            HwVideoDecoder::new(config).context("failed to create hardware H264 decoder")?;
+        direct_output.decoder_ready.store(true, Ordering::Release);
         let (access_units, worker_access_units) = bounded(MAX_PENDING_ACCESS_UNITS);
         let (commands, worker_commands) = unbounded();
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
         let latest_result = Arc::new(Mutex::new(None));
         let worker_latest_result = Arc::clone(&latest_result);
+        let result_ready = Arc::new(tokio::sync::Notify::new());
+        let worker_result_ready = Arc::clone(&result_ready);
         let worker_direct_output = Arc::clone(&direct_output);
 
         std::thread::Builder::new()
             .name("green-vita-video-decode".to_owned())
             .spawn(move || {
+                #[cfg(target_os = "vita")]
+                pin_decoder_thread();
                 run_decode_loop(
                     worker_access_units,
                     worker_commands,
                     worker_generation,
                     worker_latest_result,
+                    worker_result_ready,
                     decoder,
                     config,
                     worker_direct_output,
@@ -76,10 +72,27 @@ impl VideoDecodeWorker {
             commands,
             generation,
             latest_result,
+            result_ready,
         })
     }
 
-    pub fn submit_access_unit(&self, data: Vec<u8>) -> bool {
+    pub fn submit_access_unit(&self, data: Vec<u8>, source_frame_duration_us: Option<u64>) -> bool {
+        let source_fps = source_frame_duration_us
+            .filter(|duration| *duration > 0)
+            .map(|duration| 1_000_000 / duration)
+            .unwrap_or(30);
+        let extra_capacity = source_fps
+            .saturating_sub(30)
+            .min(25)
+            .saturating_mul((MAX_PENDING_ACCESS_UNITS - MIN_PENDING_ACCESS_UNITS) as u64)
+            .saturating_add(12)
+            / 25;
+        let pending_limit = MIN_PENDING_ACCESS_UNITS + extra_capacity as usize;
+        if self.access_units.len() >= pending_limit {
+            metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+
         let access_unit = QueuedAccessUnit {
             data,
             queued_at: Instant::now(),
@@ -88,7 +101,7 @@ impl VideoDecodeWorker {
         match self.access_units.try_send(access_unit) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
-                metrics::METRICS.queue_full.increment();
+                metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
                 false
             }
             Err(TrySendError::Disconnected(_)) => false,
@@ -104,11 +117,6 @@ impl VideoDecodeWorker {
     pub fn begin_resync(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         metrics::METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
-        let _ = self.commands.send(DecoderCommand::Resync);
-    }
-
-    pub fn try_recv(&self) -> Option<DecodeResult> {
-        self.latest_result.lock().ok()?.take()
     }
 }
 
@@ -118,11 +126,26 @@ impl Drop for VideoDecodeWorker {
     }
 }
 
+#[cfg(target_os = "vita")]
+fn pin_decoder_thread() {
+    let thread_id = unsafe { vitasdk_sys::sceKernelGetThreadId() };
+    let result = unsafe {
+        vitasdk_sys::sceKernelChangeThreadCpuAffinityMask(
+            thread_id,
+            vitasdk_sys::SCE_KERNEL_CPU_MASK_USER_2 as i32,
+        )
+    };
+    if result < 0 {
+        eprintln!("Failed to pin video decoder thread to user CPU 2: {result:#x}");
+    }
+}
+
 fn run_decode_loop(
     access_units: Receiver<QueuedAccessUnit>,
     commands: Receiver<DecoderCommand>,
     generation: Arc<AtomicU64>,
     latest_result: Arc<Mutex<Option<DecodeResult>>>,
+    result_ready: Arc<tokio::sync::Notify>,
     initial_decoder: HwVideoDecoder,
     config: DecoderConfig,
     direct_output: Arc<DirectVideoOutput>,
@@ -136,9 +159,6 @@ fn run_decode_loop(
                     decoder = None;
                     continue;
                 }
-                Ok(DecoderCommand::Resync) => {
-                    continue;
-                }
                 Ok(DecoderCommand::Stop) | Err(_) => break,
             },
             recv(access_units) -> access_unit => {
@@ -148,6 +168,7 @@ fn run_decode_loop(
                     config,
                     &generation,
                     &latest_result,
+                    &result_ready,
                     access_unit,
                     &direct_output,
                 );
@@ -161,6 +182,7 @@ fn decode_queued_access_unit(
     config: DecoderConfig,
     generation: &AtomicU64,
     latest_result: &Mutex<Option<DecodeResult>>,
+    result_ready: &tokio::sync::Notify,
     access_unit: QueuedAccessUnit,
     direct_output: &DirectVideoOutput,
 ) {
@@ -169,11 +191,12 @@ fn decode_queued_access_unit(
     }
 
     if decoder.is_none() {
-        match config.create() {
+        match HwVideoDecoder::new(config) {
             Ok(new_decoder) => *decoder = Some(new_decoder),
             Err(error) => {
                 publish_result(
                     latest_result,
+                    result_ready,
                     Err(format!("failed to recreate H264 decoder: {error:#}")),
                 );
                 return;
@@ -184,7 +207,7 @@ fn decode_queued_access_unit(
     let Some(direct_target) = direct_output.lock_decode_target() else {
         // Do not decode until the renderer has registered its two GXM textures. There is no
         // legacy output buffer to copy from anymore.
-        metrics::METRICS.skipped.increment();
+        metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
         return;
     };
     // Measure the hardware call and contain an unexpected decoder panic inside its worker.
@@ -196,7 +219,7 @@ fn decode_queued_access_unit(
             .decode(&access_unit.data, direct_target.target)
     }));
     metrics::METRICS.decode_us.store(
-        metrics::micros(decode_started_at.elapsed()),
+        decode_started_at.elapsed().as_micros() as u64,
         Ordering::Relaxed,
     );
     if access_unit.generation != generation.load(Ordering::Acquire) {
@@ -205,34 +228,47 @@ fn decode_queued_access_unit(
 
     match decode_result {
         Ok(Ok(true)) => {
-            metrics::METRICS.decoded.increment();
-            let texture_index = direct_target.publish();
+            metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
+            let (texture_index, generation) = direct_target.publish();
             metrics::METRICS.pipeline_age_us.store(
-                metrics::micros(access_unit.queued_at.elapsed()),
+                access_unit.queued_at.elapsed().as_micros() as u64,
                 Ordering::Relaxed,
             );
-            publish_result(latest_result, Ok(DecodedFrame { texture_index }));
+            publish_result(
+                latest_result,
+                result_ready,
+                Ok(DecodedFrame {
+                    texture_index,
+                    generation,
+                }),
+            );
         }
         Ok(Ok(false)) => {}
         Ok(Err(error)) => {
             *decoder = None;
-            publish_result(latest_result, Err(error.to_string()));
+            publish_result(latest_result, result_ready, Err(error.to_string()));
         }
         Err(_) => {
             eprintln!("H264 decoder panicked; recreating decoder on next frame");
             *decoder = None;
             publish_result(
                 latest_result,
+                result_ready,
                 Err("H264 decoder panicked and was restarted".to_owned()),
             );
         }
     }
 }
 
-fn publish_result(slot: &Mutex<Option<DecodeResult>>, result: DecodeResult) {
+fn publish_result(
+    slot: &Mutex<Option<DecodeResult>>,
+    result_ready: &tokio::sync::Notify,
+    result: DecodeResult,
+) {
     if let Ok(mut latest) = slot.lock()
         && latest.replace(result).is_some()
     {
-        metrics::METRICS.replaced.increment();
+        metrics::METRICS.replaced.fetch_add(1, Ordering::Relaxed);
     }
+    result_ready.notify_one();
 }
