@@ -1,4 +1,4 @@
-use crate::streaming::video::{HW_DECODE_HEIGHT, HW_DECODE_WIDTH, VideoDecodeWorker};
+use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker};
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -16,11 +16,14 @@ const MAX_PENDING_AUDIO_PACKETS: usize = 32;
 const MAX_H264_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
 const VIDEO_RTP_CLOCK_RATE: u32 = 90_000;
 const AUDIO_MAX_LATE_PACKETS: u16 = 32;
+const LOW_FPS_DAMAGE_LIMIT: u8 = 8;
+const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 
 #[derive(Default)]
 pub(super) struct VideoSampleStats {
     pub dropped: u32,
     pub source_frame_duration_us: Option<u64>,
+    pub encoded_resolution: Option<(u32, u32)>,
 }
 
 pub(super) struct AudioRtp {
@@ -57,6 +60,8 @@ pub(super) struct VideoRtp {
     pending: Option<PendingVideoFrame>,
     next_sequence: Option<u16>,
     last_frame_timestamp: Option<u32>,
+    source_frame_duration_us: Option<u64>,
+    damage_score: u8,
     stream_too_large: bool,
     waiting_for_keyframe: bool,
 }
@@ -153,6 +158,8 @@ impl VideoRtp {
             pending: None,
             next_sequence: None,
             last_frame_timestamp: None,
+            source_frame_duration_us: None,
+            damage_score: 0,
             stream_too_large: false,
             waiting_for_keyframe: false,
         }
@@ -173,6 +180,7 @@ impl VideoRtp {
         keyframe_requested: &mut bool,
     ) -> VideoSampleStats {
         let mut stats = VideoSampleStats::default();
+        let mut frame_was_damaged = false;
         if packet.payload.is_empty() {
             if self.next_sequence == Some(packet.header.sequence_number) {
                 self.next_sequence = Some(packet.header.sequence_number.wrapping_add(1));
@@ -193,6 +201,8 @@ impl VideoRtp {
                     .map(|sequence| sequence.wrapping_add(1));
                 self.depacketizer = H264Packet::default();
                 *keyframe_requested = true;
+                self.record_damage(worker);
+                frame_was_damaged = true;
                 stats.dropped = stats.dropped.saturating_add(1);
             }
         }
@@ -221,6 +231,7 @@ impl VideoRtp {
                 self.pending = None;
                 self.next_sequence = None;
                 *keyframe_requested = true;
+                self.record_damage(worker);
                 stats.dropped = stats.dropped.saturating_add(1);
                 return stats;
             }
@@ -231,8 +242,7 @@ impl VideoRtp {
         };
         let completed = self.pending.take().expect("assembled pending video frame");
         // Record both average and worst-case RTP assembly time for the stream HUD.
-        let assembly_us =
-            crate::streaming::video::metrics::micros(completed.first_packet_at.elapsed());
+        let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
             .rtp_assembly_sum_us
             .fetch_add(assembly_us, Ordering::Relaxed);
@@ -247,16 +257,24 @@ impl VideoRtp {
             u64::from(completed.timestamp.wrapping_sub(previous)) * 1_000_000
                 / u64::from(VIDEO_RTP_CLOCK_RATE)
         });
+        if let Some(duration) = stats.source_frame_duration_us {
+            self.source_frame_duration_us = Some(
+                self.source_frame_duration_us
+                    .map(|average| (average * 7 + duration) / 8)
+                    .unwrap_or(duration),
+            );
+        }
         self.last_frame_timestamp = Some(completed.timestamp);
 
         let unit = inspect_h264_access_unit(&data);
+        stats.encoded_resolution = unit.resolution;
         let sample_too_large = unit
             .resolution
-            .is_some_and(|(width, height)| width > HW_DECODE_WIDTH || height > HW_DECODE_HEIGHT);
+            .is_some_and(|(width, height)| width > STREAM_WIDTH || height > STREAM_HEIGHT);
         if sample_too_large {
             eprintln!(
                 "Dropping H264 access unit larger than decoder: {:?} > {}x{}",
-                unit.resolution, HW_DECODE_WIDTH, HW_DECODE_HEIGHT
+                unit.resolution, STREAM_WIDTH, STREAM_HEIGHT
             );
             self.stream_too_large = true;
             // Flush queued decoder work once, then wait for a compatible IDR instead of feeding
@@ -286,14 +304,47 @@ impl VideoRtp {
                 return stats;
             }
             self.waiting_for_keyframe = false;
+            self.damage_score = 0;
+        } else if !frame_was_damaged {
+            self.damage_score = self.damage_score.saturating_sub(1);
         }
 
-        if !worker.submit_access_unit(data.to_vec()) {
+        if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
             eprintln!("Video decoder queue is full; continuing while requesting a keyframe");
             *keyframe_requested = true;
             stats.dropped = stats.dropped.saturating_add(1);
         }
         stats
+    }
+
+    fn record_damage(&mut self, worker: &VideoDecodeWorker) {
+        if self.waiting_for_keyframe {
+            return;
+        }
+
+        self.damage_score = self.damage_score.saturating_add(1);
+        let source_fps = self
+            .source_frame_duration_us
+            .filter(|duration| *duration > 0)
+            .map(|duration| 1_000_000 / duration)
+            .unwrap_or(30);
+        let damage_limit = if source_fps <= 30 {
+            LOW_FPS_DAMAGE_LIMIT
+        } else if source_fps >= 60 {
+            HIGH_FPS_DAMAGE_LIMIT
+        } else {
+            LOW_FPS_DAMAGE_LIMIT
+                - (((source_fps - 30) * u64::from(LOW_FPS_DAMAGE_LIMIT - HIGH_FPS_DAMAGE_LIMIT)
+                    + 29)
+                    / 30) as u8
+        };
+        if self.damage_score < damage_limit {
+            return;
+        }
+
+        worker.begin_resync();
+        self.waiting_for_keyframe = true;
+        self.damage_score = 0;
     }
 }
 

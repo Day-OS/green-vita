@@ -1,6 +1,5 @@
 use crate::api::streaming::rtc::session::{RtcSession, RtcSessionConfig};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
-use crate::streaming::input_metrics;
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -10,7 +9,6 @@ use rtc::peer_connection::state::RTCPeerConnectionState;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,7 +46,6 @@ enum RtcWorkerCommand {
 
 struct SampledGamepadFrame {
     frame: GamepadFrame,
-    sampled_at: Instant,
 }
 
 pub struct RtcWorker {
@@ -128,10 +125,7 @@ impl RtcWorker {
 
     pub fn send_gamepad_frame(&self, frame: GamepadFrame) {
         if let Ok(mut latest) = self.latest_gamepad.lock() {
-            *latest = Some(SampledGamepadFrame {
-                frame,
-                sampled_at: Instant::now(),
-            });
+            *latest = Some(SampledGamepadFrame { frame });
         }
     }
 
@@ -265,13 +259,11 @@ async fn run_session<B: super::session::RtcSessionBackend>(
                 // is temporarily suppressed (for example, until Confirm is released).
                 let sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
-                    sampled_at: Instant::now(),
                 });
                 send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, true);
             } else if pulse_started || latest.is_some() {
                 let mut sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
-                    sampled_at: Instant::now(),
                 });
                 // Guide/Nexus is currently the only pulsed input. Keep it asserted while normal
                 // gamepad frames continue to flow instead of immediately overwriting the press.
@@ -325,11 +317,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
         if let Some(frame) = session.video.latest_frame.take()
             && let Ok(mut latest) = latest_frame.lock()
         {
-            if latest.replace(frame).is_some() {
-                crate::streaming::video::metrics::METRICS
-                    .handoff_replaced
-                    .increment();
-            }
+            *latest = Some(frame);
         }
 
         if session.status != last_status || session.connection_state != last_connection_state {
@@ -385,15 +373,6 @@ fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
         .send_gamepad_frame(&mut session.peer, sampled.frame.clone())
     {
         *last_sent = Some((sampled.frame, now));
-        // Capture how old the newest controller sample was when it reached the RTC channel.
-        input_metrics::GAMEPAD_SEND_AGE_US.store(
-            sampled
-                .sampled_at
-                .elapsed()
-                .as_micros()
-                .min(u64::MAX as u128) as u64,
-            Ordering::Relaxed,
-        );
     }
 }
 

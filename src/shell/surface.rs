@@ -80,7 +80,7 @@ impl VitaSurface {
         self.displayed_video_texture = Some(index);
         crate::streaming::video::metrics::METRICS
             .presented
-            .increment();
+            .fetch_add(1, Ordering::Relaxed);
         self.last_frame_id = frame_id;
         Ok(())
     }

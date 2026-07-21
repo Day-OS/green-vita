@@ -242,12 +242,6 @@ pub async fn run(mut app: App) -> Result<()> {
             &clipped_primitives,
             &full_output.textures_delta,
         )?;
-        if matches!(&app.state, AppState::Streaming(_)) {
-            crate::streaming::video::metrics::METRICS
-                .render_loops
-                .increment();
-        }
-
         let frame_deadline = loop_started_at + TARGET_FRAME_TIME;
         if Instant::now() < frame_deadline {
             while Instant::now() < frame_deadline {

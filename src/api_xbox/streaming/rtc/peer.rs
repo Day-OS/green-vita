@@ -67,7 +67,7 @@ fn register_vita_codecs(media_engine: &mut MediaEngine) -> Result<()> {
                 clock_rate: 90_000,
                 channels: 0,
                 sdp_fmtp_line:
-                    "level-asymmetry-allowed=0;packetization-mode=1;profile-level-id=42e020;max-fs=3600;max-mbps=216000"
+                    "level-asymmetry-allowed=0;packetization-mode=1;profile-level-id=42e020;max-fs=3600;max-mbps=108000"
                         .to_owned(),
                 rtcp_feedback: vec![
                     RTCPFeedback {

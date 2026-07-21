@@ -3,7 +3,6 @@ use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
-use bytes::Bytes;
 use rtc::peer_connection::RTCPeerConnection;
 use rtc::peer_connection::event::{RTCDataChannelEvent, RTCPeerConnectionEvent, RTCTrackEvent};
 use rtc::peer_connection::message::RTCMessage;
@@ -44,7 +43,6 @@ pub(crate) trait RtcSessionBackend {
     fn send_pointer_event(&mut self, peer: &mut RTCPeerConnection, event: PointerEvent);
     fn notify_keyframe_requested(&mut self, peer: &mut RTCPeerConnection);
     fn server_video_size(&self) -> Option<(u32, u32)>;
-    fn performance_summary(&self) -> String;
 }
 
 pub(crate) struct RtcSession<B: RtcSessionBackend> {
@@ -134,9 +132,12 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             keyframe_requested = true;
         }
         self.request_keyframe(keyframe_requested, now);
-        let provider_stats = self.backend.performance_summary();
-        if let Some(status) = self.video.status(now, &provider_stats) {
-            self.status = status;
+        if let Some(status) = self.video.status(now) {
+            self.status = if let Some((width, height)) = self.backend.server_video_size() {
+                format!("srv:{width}x{height} {status}")
+            } else {
+                format!("srv:? {status}")
+            };
             eprintln!("{}", self.status);
         }
 

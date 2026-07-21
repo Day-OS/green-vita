@@ -8,9 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-// One decoded frame may already be waiting for presentation; keep at most two more
-// compressed frames behind it so a short hitch can recover without an unbounded delay.
-const MAX_PENDING_ACCESS_UNITS: usize = 2;
+// Faster streams arrive in larger bursts. Keep the normal 30 fps limit small, but
+// allow enough room for roughly 100 ms of compressed video near the observed 55 fps.
+const MIN_PENDING_ACCESS_UNITS: usize = 2;
+const MAX_PENDING_ACCESS_UNITS: usize = 6;
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
@@ -20,22 +21,10 @@ struct QueuedAccessUnit {
 
 enum DecoderCommand {
     Reset,
-    Resync,
     Stop,
 }
 
 pub(crate) type DecodeResult = Result<DecodedFrame, String>;
-
-impl DecoderConfig {
-    fn create(self) -> Result<HwVideoDecoder> {
-        HwVideoDecoder::new(
-            self.decode_width,
-            self.decode_height,
-            self.output_width,
-            self.output_height,
-        )
-    }
-}
 
 pub struct VideoDecodeWorker {
     access_units: Sender<QueuedAccessUnit>,
@@ -47,9 +36,8 @@ pub struct VideoDecodeWorker {
 
 impl VideoDecodeWorker {
     pub fn spawn(config: DecoderConfig, direct_output: Arc<DirectVideoOutput>) -> Result<Self> {
-        let decoder = config
-            .create()
-            .context("failed to create hardware H264 decoder")?;
+        let decoder =
+            HwVideoDecoder::new(config).context("failed to create hardware H264 decoder")?;
         direct_output.decoder_ready.store(true, Ordering::Release);
         let (access_units, worker_access_units) = bounded(MAX_PENDING_ACCESS_UNITS);
         let (commands, worker_commands) = unbounded();
@@ -88,7 +76,23 @@ impl VideoDecodeWorker {
         })
     }
 
-    pub fn submit_access_unit(&self, data: Vec<u8>) -> bool {
+    pub fn submit_access_unit(&self, data: Vec<u8>, source_frame_duration_us: Option<u64>) -> bool {
+        let source_fps = source_frame_duration_us
+            .filter(|duration| *duration > 0)
+            .map(|duration| 1_000_000 / duration)
+            .unwrap_or(30);
+        let extra_capacity = source_fps
+            .saturating_sub(30)
+            .min(25)
+            .saturating_mul((MAX_PENDING_ACCESS_UNITS - MIN_PENDING_ACCESS_UNITS) as u64)
+            .saturating_add(12)
+            / 25;
+        let pending_limit = MIN_PENDING_ACCESS_UNITS + extra_capacity as usize;
+        if self.access_units.len() >= pending_limit {
+            metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+
         let access_unit = QueuedAccessUnit {
             data,
             queued_at: Instant::now(),
@@ -97,7 +101,7 @@ impl VideoDecodeWorker {
         match self.access_units.try_send(access_unit) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
-                metrics::METRICS.queue_full.increment();
+                metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
                 false
             }
             Err(TrySendError::Disconnected(_)) => false,
@@ -113,7 +117,6 @@ impl VideoDecodeWorker {
     pub fn begin_resync(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         metrics::METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
-        let _ = self.commands.send(DecoderCommand::Resync);
     }
 }
 
@@ -156,9 +159,6 @@ fn run_decode_loop(
                     decoder = None;
                     continue;
                 }
-                Ok(DecoderCommand::Resync) => {
-                    continue;
-                }
                 Ok(DecoderCommand::Stop) | Err(_) => break,
             },
             recv(access_units) -> access_unit => {
@@ -191,7 +191,7 @@ fn decode_queued_access_unit(
     }
 
     if decoder.is_none() {
-        match config.create() {
+        match HwVideoDecoder::new(config) {
             Ok(new_decoder) => *decoder = Some(new_decoder),
             Err(error) => {
                 publish_result(
@@ -207,7 +207,7 @@ fn decode_queued_access_unit(
     let Some(direct_target) = direct_output.lock_decode_target() else {
         // Do not decode until the renderer has registered its two GXM textures. There is no
         // legacy output buffer to copy from anymore.
-        metrics::METRICS.skipped.increment();
+        metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
         return;
     };
     // Measure the hardware call and contain an unexpected decoder panic inside its worker.
@@ -219,7 +219,7 @@ fn decode_queued_access_unit(
             .decode(&access_unit.data, direct_target.target)
     }));
     metrics::METRICS.decode_us.store(
-        metrics::micros(decode_started_at.elapsed()),
+        decode_started_at.elapsed().as_micros() as u64,
         Ordering::Relaxed,
     );
     if access_unit.generation != generation.load(Ordering::Acquire) {
@@ -228,10 +228,10 @@ fn decode_queued_access_unit(
 
     match decode_result {
         Ok(Ok(true)) => {
-            metrics::METRICS.decoded.increment();
+            metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
             let (texture_index, generation) = direct_target.publish();
             metrics::METRICS.pipeline_age_us.store(
-                metrics::micros(access_unit.queued_at.elapsed()),
+                access_unit.queued_at.elapsed().as_micros() as u64,
                 Ordering::Relaxed,
             );
             publish_result(
@@ -268,7 +268,7 @@ fn publish_result(
     if let Ok(mut latest) = slot.lock()
         && latest.replace(result).is_some()
     {
-        metrics::METRICS.replaced.increment();
+        metrics::METRICS.replaced.fetch_add(1, Ordering::Relaxed);
     }
     result_ready.notify_one();
 }

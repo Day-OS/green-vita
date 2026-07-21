@@ -16,6 +16,7 @@ struct VideoStats {
     dropped: u64,
     decode_errors: u64,
     last_sample_duration_us: Option<u64>,
+    encoded_resolution: Option<(u32, u32)>,
 }
 
 pub(crate) struct VideoReceiver {
@@ -75,6 +76,9 @@ impl VideoReceiver {
         if sample_stats.source_frame_duration_us.is_some() {
             self.stats.last_sample_duration_us = sample_stats.source_frame_duration_us;
         }
+        if sample_stats.encoded_resolution.is_some() {
+            self.stats.encoded_resolution = sample_stats.encoded_resolution;
+        }
     }
 
     pub(crate) fn drain_decoder(&mut self, keyframe_requested: &mut bool) {
@@ -89,15 +93,7 @@ impl VideoReceiver {
             match result {
                 Ok(frame) => {
                     self.next_frame_id = self.next_frame_id.wrapping_add(1);
-                    if self
-                        .latest_frame
-                        .replace((self.next_frame_id, frame))
-                        .is_some()
-                    {
-                        crate::streaming::video::metrics::METRICS
-                            .receiver_replaced
-                            .increment();
-                    }
+                    self.latest_frame = Some((self.next_frame_id, frame));
                 }
                 Err(error) => {
                     eprintln!("Failed to decode H264 video frame: {error}");
@@ -127,22 +123,26 @@ impl VideoReceiver {
         }
     }
 
-    pub(crate) fn status(&mut self, now: Instant, provider_stats: &str) -> Option<String> {
+    pub(crate) fn status(&mut self, now: Instant) -> Option<String> {
         if now.duration_since(self.last_stats_report) < STREAM_STATS_INTERVAL {
             return None;
         }
         self.last_stats_report = now;
 
         let performance = crate::streaming::video::video_performance_summary();
-        let memory = crate::streaming::video::decoder_memory_summary();
         let source_fps = self
             .stats
             .last_sample_duration_us
             .filter(|duration| *duration > 0)
             .map(|duration| 1_000_000 / duration)
             .unwrap_or(0);
+        let encoded_resolution = self
+            .stats
+            .encoded_resolution
+            .map(|(width, height)| format!("{width}x{height}"))
+            .unwrap_or_else(|| "?".to_owned());
         Some(format!(
-            "srcfps:{source_fps} {performance} {provider_stats} {memory} wait:{} drop:{} err:{}",
+            "enc:{encoded_resolution} srcfps:{source_fps} {performance} wait:{} drop:{} err:{}",
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.dropped,
             self.stats.decode_errors,

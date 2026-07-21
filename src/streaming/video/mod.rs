@@ -5,16 +5,14 @@ mod worker;
 
 pub const STREAM_WIDTH: u32 = 1280;
 pub const STREAM_HEIGHT: u32 = 720;
-pub const HW_DECODE_WIDTH: u32 = 1280;
-pub const HW_DECODE_HEIGHT: u32 = 720;
 pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
 
-pub use memory::{decoder_memory_summary, reserve_decoder_cdram};
+pub use memory::reserve_decoder_cdram;
 pub use metrics::video_performance_summary;
 pub use worker::VideoDecodeWorker;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -65,17 +63,6 @@ impl DirectVideoOutput {
 
     pub(crate) fn set_targets(&self, targets: [VideoTextureTarget; 2]) {
         if let Ok(mut state) = self.state.lock() {
-            let frame_bytes = self.width.saturating_mul(self.height).saturating_mul(2);
-            let capacity = targets
-                .iter()
-                .fold(0u32, |total, target| total.saturating_add(target.capacity));
-            // Store the requested and actually allocated texture memory for the stream HUD.
-            metrics::DECODER_MEMORY
-                .output_size
-                .store(frame_bytes.saturating_mul(2), Ordering::Relaxed);
-            metrics::DECODER_MEMORY
-                .output_capacity
-                .store(capacity, Ordering::Relaxed);
             state.targets = Some(targets);
             state.displayed = None;
             state.pending = None;
@@ -84,12 +71,6 @@ impl DirectVideoOutput {
 
     pub(crate) fn clear_targets(&self) {
         if let Ok(mut state) = self.state.lock() {
-            metrics::DECODER_MEMORY
-                .output_size
-                .store(0, Ordering::Relaxed);
-            metrics::DECODER_MEMORY
-                .output_capacity
-                .store(0, Ordering::Relaxed);
             state.targets = None;
             state.displayed = None;
             state.pending = None;
