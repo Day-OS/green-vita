@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-const MAX_PENDING_ACCESS_UNITS: usize = 1;
+// One decoded frame may already be waiting for presentation; keep at most two more
+// compressed frames behind it so a short hitch can recover without an unbounded delay.
+const MAX_PENDING_ACCESS_UNITS: usize = 2;
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
@@ -22,7 +24,7 @@ enum DecoderCommand {
     Stop,
 }
 
-type DecodeResult = Result<DecodedFrame, String>;
+pub(crate) type DecodeResult = Result<DecodedFrame, String>;
 
 impl DecoderConfig {
     fn create(self) -> Result<HwVideoDecoder> {
@@ -39,7 +41,8 @@ pub struct VideoDecodeWorker {
     access_units: Sender<QueuedAccessUnit>,
     commands: Sender<DecoderCommand>,
     generation: Arc<AtomicU64>,
-    latest_result: Arc<Mutex<Option<DecodeResult>>>,
+    pub(crate) latest_result: Arc<Mutex<Option<DecodeResult>>>,
+    pub(crate) result_ready: Arc<tokio::sync::Notify>,
 }
 
 impl VideoDecodeWorker {
@@ -47,23 +50,28 @@ impl VideoDecodeWorker {
         let decoder = config
             .create()
             .context("failed to create hardware H264 decoder")?;
-        direct_output.mark_decoder_ready();
+        direct_output.decoder_ready.store(true, Ordering::Release);
         let (access_units, worker_access_units) = bounded(MAX_PENDING_ACCESS_UNITS);
         let (commands, worker_commands) = unbounded();
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
         let latest_result = Arc::new(Mutex::new(None));
         let worker_latest_result = Arc::clone(&latest_result);
+        let result_ready = Arc::new(tokio::sync::Notify::new());
+        let worker_result_ready = Arc::clone(&result_ready);
         let worker_direct_output = Arc::clone(&direct_output);
 
         std::thread::Builder::new()
             .name("green-vita-video-decode".to_owned())
             .spawn(move || {
+                #[cfg(target_os = "vita")]
+                pin_decoder_thread();
                 run_decode_loop(
                     worker_access_units,
                     worker_commands,
                     worker_generation,
                     worker_latest_result,
+                    worker_result_ready,
                     decoder,
                     config,
                     worker_direct_output,
@@ -76,6 +84,7 @@ impl VideoDecodeWorker {
             commands,
             generation,
             latest_result,
+            result_ready,
         })
     }
 
@@ -106,10 +115,6 @@ impl VideoDecodeWorker {
         metrics::METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
         let _ = self.commands.send(DecoderCommand::Resync);
     }
-
-    pub fn try_recv(&self) -> Option<DecodeResult> {
-        self.latest_result.lock().ok()?.take()
-    }
 }
 
 impl Drop for VideoDecodeWorker {
@@ -118,11 +123,26 @@ impl Drop for VideoDecodeWorker {
     }
 }
 
+#[cfg(target_os = "vita")]
+fn pin_decoder_thread() {
+    let thread_id = unsafe { vitasdk_sys::sceKernelGetThreadId() };
+    let result = unsafe {
+        vitasdk_sys::sceKernelChangeThreadCpuAffinityMask(
+            thread_id,
+            vitasdk_sys::SCE_KERNEL_CPU_MASK_USER_2 as i32,
+        )
+    };
+    if result < 0 {
+        eprintln!("Failed to pin video decoder thread to user CPU 2: {result:#x}");
+    }
+}
+
 fn run_decode_loop(
     access_units: Receiver<QueuedAccessUnit>,
     commands: Receiver<DecoderCommand>,
     generation: Arc<AtomicU64>,
     latest_result: Arc<Mutex<Option<DecodeResult>>>,
+    result_ready: Arc<tokio::sync::Notify>,
     initial_decoder: HwVideoDecoder,
     config: DecoderConfig,
     direct_output: Arc<DirectVideoOutput>,
@@ -148,6 +168,7 @@ fn run_decode_loop(
                     config,
                     &generation,
                     &latest_result,
+                    &result_ready,
                     access_unit,
                     &direct_output,
                 );
@@ -161,6 +182,7 @@ fn decode_queued_access_unit(
     config: DecoderConfig,
     generation: &AtomicU64,
     latest_result: &Mutex<Option<DecodeResult>>,
+    result_ready: &tokio::sync::Notify,
     access_unit: QueuedAccessUnit,
     direct_output: &DirectVideoOutput,
 ) {
@@ -174,6 +196,7 @@ fn decode_queued_access_unit(
             Err(error) => {
                 publish_result(
                     latest_result,
+                    result_ready,
                     Err(format!("failed to recreate H264 decoder: {error:#}")),
                 );
                 return;
@@ -206,33 +229,46 @@ fn decode_queued_access_unit(
     match decode_result {
         Ok(Ok(true)) => {
             metrics::METRICS.decoded.increment();
-            let texture_index = direct_target.publish();
+            let (texture_index, generation) = direct_target.publish();
             metrics::METRICS.pipeline_age_us.store(
                 metrics::micros(access_unit.queued_at.elapsed()),
                 Ordering::Relaxed,
             );
-            publish_result(latest_result, Ok(DecodedFrame { texture_index }));
+            publish_result(
+                latest_result,
+                result_ready,
+                Ok(DecodedFrame {
+                    texture_index,
+                    generation,
+                }),
+            );
         }
         Ok(Ok(false)) => {}
         Ok(Err(error)) => {
             *decoder = None;
-            publish_result(latest_result, Err(error.to_string()));
+            publish_result(latest_result, result_ready, Err(error.to_string()));
         }
         Err(_) => {
             eprintln!("H264 decoder panicked; recreating decoder on next frame");
             *decoder = None;
             publish_result(
                 latest_result,
+                result_ready,
                 Err("H264 decoder panicked and was restarted".to_owned()),
             );
         }
     }
 }
 
-fn publish_result(slot: &Mutex<Option<DecodeResult>>, result: DecodeResult) {
+fn publish_result(
+    slot: &Mutex<Option<DecodeResult>>,
+    result_ready: &tokio::sync::Notify,
+    result: DecodeResult,
+) {
     if let Ok(mut latest) = slot.lock()
         && latest.replace(result).is_some()
     {
         metrics::METRICS.replaced.increment();
     }
+    result_ready.notify_one();
 }

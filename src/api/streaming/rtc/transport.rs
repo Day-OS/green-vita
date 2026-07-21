@@ -10,7 +10,7 @@ use tokio::net::UdpSocket;
 
 /// UDP/ICE transport shared by WebRTC streaming providers.
 pub(crate) struct RtcTransport {
-    socket: UdpSocket,
+    pub(crate) socket: UdpSocket,
     local_addr: SocketAddr,
     recv_buf: Vec<u8>,
 }

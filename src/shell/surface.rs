@@ -6,12 +6,13 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, Texture};
 use sdl2::video::Window;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 pub const WIDTH: u32 = 960;
 pub const HEIGHT: u32 = 544;
 
 pub struct VitaSurface {
-    canvas: Canvas<Window>,
+    pub(crate) canvas: Canvas<Window>,
     video_textures: Option<[Texture; 2]>,
     displayed_video_texture: Option<usize>,
     direct_video_output: Option<Arc<DirectVideoOutput>>,
@@ -56,10 +57,6 @@ impl VitaSurface {
         Self::fit_rect(self.video_width, self.video_height, WIDTH, HEIGHT)
     }
 
-    pub fn window(&self) -> &Window {
-        self.canvas.window()
-    }
-
     pub fn sync_video_frame(&mut self, streaming: Option<&StreamingSession>) -> Result<()> {
         let Some(streaming) = streaming else {
             self.detach_direct_video_output();
@@ -78,7 +75,7 @@ impl VitaSurface {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
         }
         if let Some(output) = &self.direct_video_output {
-            output.mark_displayed(index);
+            output.mark_displayed(index, frame.generation);
         }
         self.displayed_video_texture = Some(index);
         crate::streaming::video::metrics::METRICS
@@ -97,7 +94,7 @@ impl VitaSurface {
         if !output_is_current && self.direct_video_output.is_some() {
             self.detach_direct_video_output();
         }
-        if !output.decoder_ready() {
+        if !output.decoder_ready.load(Ordering::Acquire) {
             return Ok(());
         }
         if output_is_current && self.video_textures.is_some() {
@@ -105,7 +102,7 @@ impl VitaSurface {
         }
 
         self.detach_direct_video_output();
-        let (width, height) = output.dimensions();
+        let (width, height) = (output.width, output.height);
         let create_texture = || {
             self.canvas
                 .create_texture_streaming(PixelFormatEnum::BGR565, width, height)

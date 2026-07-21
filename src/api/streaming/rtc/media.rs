@@ -23,10 +23,10 @@ pub(crate) struct VideoReceiver {
     receiver_id: Option<RTCRtpReceiverId>,
     ssrc: Option<u32>,
     rtp: rtp::VideoRtp,
-    decoder: VideoDecodeWorker,
-    latest_frame: Option<(u64, DecodedFrame)>,
+    pub(crate) decoder: VideoDecodeWorker,
+    pub(crate) latest_frame: Option<(u64, DecodedFrame)>,
     next_frame_id: u64,
-    received_packet: bool,
+    pub(crate) received_packet: bool,
     last_stats_report: Instant,
     stats: VideoStats,
 }
@@ -79,11 +79,25 @@ impl VideoReceiver {
 
     pub(crate) fn drain_decoder(&mut self, keyframe_requested: &mut bool) {
         let mut decode_errors = 0u64;
-        while let Some(result) = self.decoder.try_recv() {
+        while let Some(result) = self
+            .decoder
+            .latest_result
+            .lock()
+            .ok()
+            .and_then(|mut latest| latest.take())
+        {
             match result {
                 Ok(frame) => {
                     self.next_frame_id = self.next_frame_id.wrapping_add(1);
-                    self.latest_frame = Some((self.next_frame_id, frame));
+                    if self
+                        .latest_frame
+                        .replace((self.next_frame_id, frame))
+                        .is_some()
+                    {
+                        crate::streaming::video::metrics::METRICS
+                            .receiver_replaced
+                            .increment();
+                    }
                 }
                 Err(error) => {
                     eprintln!("Failed to decode H264 video frame: {error}");
@@ -98,14 +112,6 @@ impl VideoReceiver {
             self.decoder.reset_decoder();
             self.rtp.wait_for_keyframe();
         }
-    }
-
-    pub(crate) fn take_new_frame(&mut self) -> Option<(u64, DecodedFrame)> {
-        self.latest_frame.take()
-    }
-
-    pub(crate) fn has_received_packet(&self) -> bool {
-        self.received_packet
     }
 
     pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {
@@ -147,7 +153,7 @@ impl VideoReceiver {
 pub(crate) struct AudioReceiver {
     track_id: Option<MediaStreamTrackId>,
     rtp: rtp::AudioRtp,
-    packets: Vec<Bytes>,
+    pub(crate) packets: Vec<Bytes>,
 }
 
 impl AudioReceiver {
@@ -169,9 +175,5 @@ impl AudioReceiver {
 
     pub(crate) fn receive(&mut self, packet: Packet) {
         self.rtp.receive(packet, &mut self.packets);
-    }
-
-    pub(crate) fn drain(&mut self) -> Vec<Bytes> {
-        std::mem::take(&mut self.packets)
     }
 }

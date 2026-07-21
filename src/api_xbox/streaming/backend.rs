@@ -45,7 +45,7 @@ impl XboxStreamingBackend {
 
     pub(crate) fn try_recv_event(&mut self) -> Option<PlaybackBackendEvent> {
         loop {
-            match self.worker.try_recv()? {
+            match self.worker.events_rx.try_recv().ok()? {
                 RtcWorkerEvent::LocalCandidates(candidates) => {
                     self.pending_local_ice_candidates.extend(candidates);
                 }
@@ -64,15 +64,15 @@ impl XboxStreamingBackend {
     }
 
     pub(crate) fn try_recv_audio_packets(&self) -> Option<Vec<Bytes>> {
-        self.worker.try_recv_audio_packets()
+        self.worker.audio_rx.try_recv().ok()
     }
 
     pub(crate) fn take_latest_frame(&self) -> Option<(u64, DecodedFrame)> {
-        self.worker.take_latest_frame()
+        self.worker.latest_frame.lock().ok()?.take()
     }
 
     pub(crate) fn direct_video_output(&self) -> Arc<DirectVideoOutput> {
-        self.worker.direct_video_output()
+        Arc::clone(&self.worker.direct_video_output)
     }
 
     pub(crate) fn send_gamepad_frame(&self, frame: GamepadFrame) {

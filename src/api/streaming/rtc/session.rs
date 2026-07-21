@@ -1,7 +1,7 @@
 use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver};
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
-use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput};
+use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use rtc::peer_connection::RTCPeerConnection;
@@ -48,12 +48,12 @@ pub(crate) trait RtcSessionBackend {
 }
 
 pub(crate) struct RtcSession<B: RtcSessionBackend> {
-    peer: RTCPeerConnection,
-    transport: RtcTransport,
-    backend: B,
+    pub(crate) peer: RTCPeerConnection,
+    pub(crate) transport: RtcTransport,
+    pub(crate) backend: B,
     pub connection_state: RTCPeerConnectionState,
-    video: VideoReceiver,
-    audio: AudioReceiver,
+    pub(crate) video: VideoReceiver,
+    pub(crate) audio: AudioReceiver,
     last_keyframe_request: Option<Instant>,
     initial_video_watchdog_started_at: Option<Instant>,
     last_initial_video_keyframe_request: Option<Instant>,
@@ -109,30 +109,10 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             .context("failed to close rtc peer connection")
     }
 
-    pub fn take_new_video_frame(&mut self) -> Option<(u64, DecodedFrame)> {
-        self.video.take_new_frame()
-    }
-
     pub fn add_remote_candidate(&mut self, candidate: RTCIceCandidateInit) -> Result<()> {
         self.peer
             .add_remote_candidate(candidate)
             .context("failed to add remote ICE candidate")
-    }
-
-    pub fn drain_audio_packets(&mut self) -> Vec<Bytes> {
-        self.audio.drain()
-    }
-
-    pub fn server_video_size(&self) -> Option<(u32, u32)> {
-        self.backend.server_video_size()
-    }
-
-    pub fn send_gamepad_frame(&mut self, frame: GamepadFrame) -> bool {
-        self.backend.send_gamepad_frame(&mut self.peer, frame)
-    }
-
-    pub fn send_pointer_event(&mut self, event: PointerEvent) {
-        self.backend.send_pointer_event(&mut self.peer, event);
     }
 
     pub async fn pump(&mut self) -> Result<Vec<RTCIceCandidateInit>> {
@@ -164,7 +144,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     }
 
     fn initial_video_keyframe_due(&mut self, now: Instant) -> bool {
-        if self.video.has_received_packet() {
+        if self.video.received_packet {
             self.initial_video_watchdog_started_at = None;
             self.last_initial_video_keyframe_request = None;
             return false;

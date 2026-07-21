@@ -162,7 +162,7 @@ pub fn startup_messages() -> Vec<Value> {
                 "supportsCustomResolution": true,
                 "supportsHevc": false,
                 "supportsHdr": false,
-                "supportsFps": 30,
+                "supportsFps": 60,
                 "maxWidth": width,
                 "maxHeight": height,
                 "maxBitrateKbps": 3500,

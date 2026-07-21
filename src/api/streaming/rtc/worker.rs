@@ -53,12 +53,12 @@ struct SampledGamepadFrame {
 
 pub struct RtcWorker {
     commands_tx: SyncSender<RtcWorkerCommand>,
-    events_rx: Receiver<RtcWorkerEvent>,
-    audio_rx: Receiver<Vec<Bytes>>,
-    latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
+    pub(crate) events_rx: Receiver<RtcWorkerEvent>,
+    pub(crate) audio_rx: Receiver<Vec<Bytes>>,
+    pub(crate) latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
-    direct_video_output: Arc<DirectVideoOutput>,
+    pub(crate) direct_video_output: Arc<DirectVideoOutput>,
 }
 
 impl RtcWorker {
@@ -117,22 +117,6 @@ impl RtcWorker {
             gamepad_pulses,
             direct_video_output,
         })
-    }
-
-    pub fn try_recv(&self) -> Option<RtcWorkerEvent> {
-        self.events_rx.try_recv().ok()
-    }
-
-    pub fn try_recv_audio_packets(&self) -> Option<Vec<Bytes>> {
-        self.audio_rx.try_recv().ok()
-    }
-
-    pub fn take_latest_frame(&self) -> Option<(u64, DecodedFrame)> {
-        self.latest_frame.lock().ok()?.take()
-    }
-
-    pub fn direct_video_output(&self) -> Arc<DirectVideoOutput> {
-        Arc::clone(&self.direct_video_output)
     }
 
     pub fn add_remote_candidate(&self, candidate: RTCIceCandidateInit) {
@@ -194,6 +178,8 @@ fn run_worker_thread<P: RtcWorkerProvider>(
                 .await
                 .context("timed out waiting for RTC SDP answer")??;
         session.set_remote_answer(answer_sdp)?;
+        #[cfg(target_os = "vita")]
+        prioritize_rtc_thread();
 
         send_lossy(
             &events_tx,
@@ -215,6 +201,29 @@ fn run_worker_thread<P: RtcWorkerProvider>(
     })
 }
 
+#[cfg(target_os = "vita")]
+fn prioritize_rtc_thread() {
+    let thread_id = unsafe { vitasdk_sys::sceKernelGetThreadId() };
+    let affinity_result = unsafe {
+        vitasdk_sys::sceKernelChangeThreadCpuAffinityMask(
+            thread_id,
+            vitasdk_sys::SCE_KERNEL_CPU_MASK_USER_1 as i32,
+        )
+    };
+    if affinity_result < 0 {
+        eprintln!("Failed to pin RTC thread to user CPU 1: {affinity_result:#x}");
+    }
+
+    let result = unsafe {
+        sdl2::sys::SDL_SetThreadPriority(
+            sdl2::sys::SDL_ThreadPriority::SDL_THREAD_PRIORITY_TIME_CRITICAL,
+        )
+    };
+    if result < 0 {
+        eprintln!("Failed to maximize RTC thread priority: {result}");
+    }
+}
+
 async fn run_session<B: super::session::RtcSessionBackend>(
     mut session: RtcSession<B>,
     commands_rx: Receiver<RtcWorkerCommand>,
@@ -226,7 +235,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
 ) -> Result<()> {
     let mut last_status = session.status.clone();
     let mut last_connection_state = session.connection_state;
-    let mut last_server_video_size = session.server_video_size();
+    let mut last_server_video_size = session.backend.server_video_size();
     let mut consecutive_pump_errors = 0u32;
     let mut active_gamepad_pulse: Option<(GamepadFrame, Instant)> = None;
     let mut last_gamepad_sent: Option<(GamepadFrame, Instant)> = None;
@@ -308,15 +317,19 @@ async fn run_session<B: super::session::RtcSessionBackend>(
             );
         }
 
-        let audio_packets = session.drain_audio_packets();
+        let audio_packets = std::mem::take(&mut session.audio.packets);
         if !audio_packets.is_empty() {
             send_lossy(&audio_tx, audio_packets);
         }
 
-        if let Some(frame) = session.take_new_video_frame()
+        if let Some(frame) = session.video.latest_frame.take()
             && let Ok(mut latest) = latest_frame.lock()
         {
-            *latest = Some(frame);
+            if latest.replace(frame).is_some() {
+                crate::streaming::video::metrics::METRICS
+                    .handoff_replaced
+                    .increment();
+            }
         }
 
         if session.status != last_status || session.connection_state != last_connection_state {
@@ -330,7 +343,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
             );
         }
 
-        let server_video_size = session.server_video_size();
+        let server_video_size = session.backend.server_video_size();
         if server_video_size != last_server_video_size
             && let Some((width, height)) = server_video_size
         {
@@ -343,7 +356,13 @@ async fn run_session<B: super::session::RtcSessionBackend>(
             return Ok(());
         }
 
-        tokio::time::sleep(PUMP_SLEEP).await;
+        tokio::select! {
+            readable = session.transport.socket.readable() => {
+                readable.context("failed waiting for WebRTC UDP socket")?;
+            }
+            _ = session.video.decoder.result_ready.notified() => {}
+            _ = tokio::time::sleep(PUMP_SLEEP) => {}
+        }
     }
 }
 
@@ -361,7 +380,10 @@ fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
         return;
     }
 
-    if session.send_gamepad_frame(sampled.frame.clone()) {
+    if session
+        .backend
+        .send_gamepad_frame(&mut session.peer, sampled.frame.clone())
+    {
         *last_sent = Some((sampled.frame, now));
         // Capture how old the newest controller sample was when it reached the RTC channel.
         input_metrics::GAMEPAD_SEND_AGE_US.store(
@@ -387,7 +409,7 @@ fn drain_commands<B: super::session::RtcSessionBackend>(
                 }
             }
             Ok(RtcWorkerCommand::SendPointerEvent(event)) => {
-                session.send_pointer_event(event);
+                session.backend.send_pointer_event(&mut session.peer, event);
             }
             Ok(RtcWorkerCommand::Stop) | Err(TryRecvError::Disconnected) => return false,
             Err(TryRecvError::Empty) => return true,

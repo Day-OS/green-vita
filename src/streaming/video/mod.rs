@@ -14,8 +14,13 @@ pub use memory::{decoder_memory_summary, reserve_decoder_cdram};
 pub use metrics::video_performance_summary;
 pub use worker::VideoDecodeWorker;
 
-use std::sync::atomic::Ordering;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard};
+use std::time::Duration;
+
+// Let a short render hitch absorb at most two 30 fps intervals. Together with the
+// frame already pending for presentation, this caps the microbuffer at three frames.
+const MAX_PENDING_TEXTURE_WAIT: Duration = Duration::from_millis(67);
 
 #[derive(Clone, Copy)]
 pub(crate) struct VideoTextureTarget {
@@ -27,8 +32,8 @@ pub(crate) struct VideoTextureTarget {
 struct DirectVideoOutputState {
     targets: Option<[VideoTextureTarget; 2]>,
     displayed: Option<usize>,
-    pending: Option<usize>,
-    decoder_ready: bool,
+    pending: Option<(usize, u64)>,
+    next_generation: u64,
 }
 
 /// Synchronizes the decoder thread with the two SDL/GXM textures owned by the render thread.
@@ -36,8 +41,10 @@ struct DirectVideoOutputState {
 /// that registers and consumes the textures.
 pub(crate) struct DirectVideoOutput {
     state: Mutex<DirectVideoOutputState>,
-    width: u32,
-    height: u32,
+    frame_displayed: Condvar,
+    pub(crate) decoder_ready: AtomicBool,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 impl DirectVideoOutput {
@@ -47,25 +54,13 @@ impl DirectVideoOutput {
                 targets: None,
                 displayed: None,
                 pending: None,
-                decoder_ready: false,
+                next_generation: 0,
             }),
+            frame_displayed: Condvar::new(),
+            decoder_ready: AtomicBool::new(false),
             width,
             height,
         }
-    }
-
-    pub(crate) fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    pub(super) fn mark_decoder_ready(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.decoder_ready = true;
-        }
-    }
-
-    pub(crate) fn decoder_ready(&self) -> bool {
-        self.state.lock().is_ok_and(|state| state.decoder_ready)
     }
 
     pub(crate) fn set_targets(&self, targets: [VideoTextureTarget; 2]) {
@@ -99,22 +94,38 @@ impl DirectVideoOutput {
             state.displayed = None;
             state.pending = None;
         }
+        self.frame_displayed.notify_all();
     }
 
-    pub(crate) fn mark_displayed(&self, index: usize) {
+    pub(crate) fn mark_displayed(&self, index: usize, generation: u64) {
+        let mut cleared_pending = false;
         if let Ok(mut state) = self.state.lock() {
             state.displayed = Some(index);
-            if state.pending == Some(index) {
+            if state.pending == Some((index, generation)) {
                 state.pending = None;
+                cleared_pending = true;
             }
+        }
+        if cleared_pending {
+            self.frame_displayed.notify_one();
         }
     }
 
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
-        let state = self.state.lock().ok()?;
+        let mut state = self.state.lock().ok()?;
+        if state.pending.is_some() {
+            let (waited_state, _) = self
+                .frame_displayed
+                .wait_timeout_while(state, MAX_PENDING_TEXTURE_WAIT, |state| {
+                    state.targets.is_some() && state.pending.is_some()
+                })
+                .ok()?;
+            state = waited_state;
+        }
         let targets = state.targets?;
         let index = state
             .pending
+            .map(|(index, _)| index)
             .unwrap_or_else(|| state.displayed.map_or(0, |displayed| 1 - displayed));
         Some(DirectVideoTargetGuard {
             state,
@@ -131,14 +142,17 @@ pub(super) struct DirectVideoTargetGuard<'a> {
 }
 
 impl DirectVideoTargetGuard<'_> {
-    pub(super) fn publish(mut self) -> usize {
-        self.state.pending = Some(self.index);
-        self.index
+    pub(super) fn publish(mut self) -> (usize, u64) {
+        self.state.next_generation = self.state.next_generation.wrapping_add(1);
+        let generation = self.state.next_generation;
+        self.state.pending = Some((self.index, generation));
+        (self.index, generation)
     }
 }
 
 pub struct DecodedFrame {
     pub texture_index: usize,
+    pub generation: u64,
 }
 
 #[derive(Clone, Copy)]
