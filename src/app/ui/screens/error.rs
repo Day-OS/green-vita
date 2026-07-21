@@ -12,7 +12,10 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
         show_header_row(ui, app, theme, &i18n, None);
         ui.separator();
-        if let AppState::Error { reason, details } = &app.state {
+        if let AppState::Error {
+            reason, details, ..
+        } = &app.state
+        {
             ui.colored_label(theme.text_bright, reason);
             ui.add(egui::Label::new(egui::RichText::new(details).color(theme.text)).wrap());
         }

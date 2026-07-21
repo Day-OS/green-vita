@@ -115,9 +115,13 @@ impl App {
             AppState::TitleList { .. } | AppState::LoadingTitles(_) => {
                 self.handle_title_list_input(command).await
             }
-            AppState::Error { .. } => {
+            AppState::Error { retry_sign_in, .. } => {
                 if command == InputCommand::Back {
-                    self.set_state(AppState::ModeSelect { selected: 0 });
+                    if *retry_sign_in {
+                        self.set_state(AppState::InitializeAuthentication);
+                    } else {
+                        self.set_state(AppState::ModeSelect { selected: 0 });
+                    }
                 }
                 Ok(())
             }

@@ -8,6 +8,11 @@ use crate::{
 use anyhow::Result;
 use tokio::task::JoinHandle;
 
+pub(crate) struct CredentialsLoadResult {
+    pub(super) result: Result<(StreamingCredentials, Option<XboxProfile>)>,
+    pub(super) auth: MsalAuth,
+}
+
 pub(crate) enum AppState {
     InitializeAuthentication,
     LanguageSelect {
@@ -18,7 +23,7 @@ pub(crate) enum AppState {
         device_code: DeviceCodeAuth,
         job: JoinHandle<Result<MsalAuth>>,
     },
-    LoadingCredentials(JoinHandle<Result<(StreamingCredentials, Option<XboxProfile>, MsalAuth)>>),
+    LoadingCredentials(JoinHandle<Result<CredentialsLoadResult>>),
     ModeSelect {
         selected: usize,
     },
@@ -49,6 +54,7 @@ pub(crate) enum AppState {
     Error {
         reason: String,
         details: String,
+        retry_sign_in: bool,
     },
 }
 

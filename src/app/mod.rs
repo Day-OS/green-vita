@@ -65,7 +65,11 @@ impl App {
         if !details.is_empty() {
             eprintln!("{details}");
         }
-        self.set_state(AppState::Error { reason, details });
+        self.set_state(AppState::Error {
+            reason,
+            details,
+            retry_sign_in: false,
+        });
     }
 
     fn localized_error(&self, reason_key: &'static str, error: impl Display) -> (String, String) {
@@ -83,9 +87,22 @@ impl App {
         self.set_error_screen(reason, details);
     }
 
+    fn set_sign_in_error_screen(&mut self, error: impl Display) {
+        let (reason, details) = self.localized_error("error-sign-in-request", error);
+        self.set_state(AppState::Error {
+            reason,
+            details,
+            retry_sign_in: true,
+        });
+    }
+
     fn localized_error_state(&self, reason_key: &'static str, error: impl Display) -> AppState {
         let (reason, details) = self.localized_error(reason_key, error);
-        AppState::Error { reason, details }
+        AppState::Error {
+            reason,
+            details,
+            retry_sign_in: false,
+        }
     }
 
     /// The active cloud title's display name - `None` for Home streams.

@@ -1,10 +1,9 @@
+use super::state::CredentialsLoadResult;
 use super::stream_session::cleanup_active_sessions;
 use super::{App, AppState, PollJob, poll_job};
 use crate::api::catalog::Game;
 use crate::api::catalog::worker::ImageKind;
-use crate::{
-    DeviceCodeAuth, DeviceCodePoll, MsalAuth, StreamKind, StreamingCredentials, XboxProfile,
-};
+use crate::{DeviceCodeAuth, DeviceCodePoll, MsalAuth, StreamKind};
 use anyhow::Result;
 use tokio::task::JoinHandle;
 
@@ -14,7 +13,15 @@ impl App {
     pub(super) fn load_credentials(&mut self) {
         let mut auth = self.service.auth.clone();
         self.set_state(AppState::LoadingCredentials(tokio::spawn(async move {
-            let credentials = auth.fetch_streaming_credentials().await?;
+            let credentials = match auth.fetch_streaming_credentials().await {
+                Ok(credentials) => credentials,
+                Err(error) => {
+                    return Ok(CredentialsLoadResult {
+                        result: Err(error),
+                        auth,
+                    });
+                }
+            };
             // Profile data is decorative and must not prevent sign-in.
             let profile = match auth.fetch_xbox_profile().await {
                 Ok(profile) => Some(profile),
@@ -23,7 +30,10 @@ impl App {
                     None
                 }
             };
-            Ok((credentials, profile, auth))
+            Ok(CredentialsLoadResult {
+                result: Ok((credentials, profile)),
+                auth,
+            })
         })));
     }
 
@@ -134,13 +144,13 @@ impl App {
         })
     }
 
-    async fn pump_credentials(
-        &mut self,
-        job: JoinHandle<Result<(StreamingCredentials, Option<XboxProfile>, MsalAuth)>>,
-    ) {
+    async fn pump_credentials(&mut self, job: JoinHandle<Result<CredentialsLoadResult>>) {
         match poll_job(job).await {
             PollJob::Pending(job) => self.state = AppState::LoadingCredentials(job),
-            PollJob::Done(Ok((credentials, profile, auth))) => {
+            PollJob::Done(Ok(CredentialsLoadResult {
+                result: Ok((credentials, profile)),
+                auth,
+            })) => {
                 self.service.api.config.home = credentials.home;
                 self.service.api.config.cloud = credentials.cloud;
                 self.service.api.config.cloud_f2p = credentials.cloud_f2p;
@@ -165,9 +175,17 @@ impl App {
                 });
                 self.set_state(AppState::ModeSelect { selected: 0 });
             }
+            PollJob::Done(Ok(CredentialsLoadResult {
+                result: Err(error),
+                auth,
+            })) => {
+                self.service.auth = auth;
+                eprintln!("Xbox sign-in failed: {error:#}");
+                self.set_sign_in_error_screen(format!("{error:#}"));
+            }
             PollJob::Done(Err(error)) => {
-                eprintln!("Saved xCloud login failed to refresh: {error:#}");
-                self.request_device_code();
+                eprintln!("Xbox sign-in task failed: {error:#}");
+                self.set_sign_in_error_screen(format!("{error:#}"));
             }
         }
     }

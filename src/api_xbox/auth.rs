@@ -69,6 +69,12 @@ struct DeviceCodeErrorResponse {
     error_description: Option<String>,
 }
 
+impl DeviceCodeErrorResponse {
+    fn description(self) -> String {
+        self.error_description.unwrap_or(self.error)
+    }
+}
+
 pub enum DeviceCodePoll {
     Pending(Duration),
     Authorized,
@@ -330,14 +336,32 @@ impl MsalAuth {
             )
             .await?;
 
-        if response.status().as_u16() == 400 {
-            self.clear_saved_login();
-            bail!("saved xCloud login expired; please sign in again");
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .context("failed to read token refresh error response")?;
+            let oauth_error = serde_json::from_str::<DeviceCodeErrorResponse>(&body).ok();
+
+            if oauth_error
+                .as_ref()
+                .is_some_and(|error| error.error == "invalid_grant")
+            {
+                self.clear_saved_login();
+                let description = oauth_error
+                    .map(DeviceCodeErrorResponse::description)
+                    .unwrap_or(body);
+                bail!("saved xCloud login expired; please sign in again: {description}");
+            }
+
+            let details = oauth_error
+                .map(DeviceCodeErrorResponse::description)
+                .unwrap_or(body);
+            bail!("token refresh rejected with {status}: {details}");
         }
 
         let token: UserTokenResponse = response
-            .error_for_status()
-            .context("token refresh rejected")?
             .json()
             .await
             .context("failed to decode token refresh response")?;
@@ -384,12 +408,20 @@ impl MsalAuth {
         for (key, value) in headers {
             request = request.header(*key, *value);
         }
-        request
+        let response = request
             .send()
             .await
-            .with_context(|| format!("{context_label} request failed"))?
-            .error_for_status()
-            .with_context(|| format!("{context_label} rejected"))?
+            .with_context(|| format!("{context_label} request failed"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .with_context(|| format!("failed to read {context_label} error response"))?;
+            bail!("{context_label} rejected with {status}: {body}");
+        }
+
+        response
             .json()
             .await
             .with_context(|| format!("failed to decode {context_label} response"))
