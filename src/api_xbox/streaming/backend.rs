@@ -149,6 +149,7 @@ impl XboxStreamingBackend {
                             candidate.sdp_mline_index.unwrap_or(0)
                         );
                         if self.remote_ice_candidates.insert(key) {
+                            eprintln!("Remote ICE candidate: {}", candidate.candidate);
                             self.worker.add_remote_candidate(candidate);
                         }
                     }
