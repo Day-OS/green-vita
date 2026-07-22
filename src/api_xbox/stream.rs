@@ -237,11 +237,20 @@ impl Stream {
     }
 }
 
+/// The streaming service always answers with an `errorDetails` envelope. xHome fills it with
+/// `{"code":null,"message":null}` even on a successful exchange, so only a populated field marks
+/// a real failure.
 fn check_exchange_error(value: &Value) -> Result<()> {
-    if let Some(error_details) = value.get("errorDetails").filter(|v| !v.is_null()) {
-        anyhow::bail!("xCloud exchange failed: {error_details}");
+    let Some(error_details) = value.get("errorDetails").filter(|v| !v.is_null()) else {
+        return Ok(());
+    };
+    if error_details
+        .as_object()
+        .is_some_and(|fields| fields.values().all(Value::is_null))
+    {
+        return Ok(());
     }
-    Ok(())
+    anyhow::bail!("xCloud exchange failed: {error_details}");
 }
 
 fn extract_answer_sdp(response: &Value) -> Result<String> {
@@ -392,5 +401,21 @@ mod tests {
             "candidate:2 1 UDP 1 203.0.113.10 9002 typ host"
         );
         assert_eq!(extract_remote_candidates(&wrapper_response).len(), 1);
+    }
+
+    #[test]
+    fn accepts_the_empty_error_envelope_a_home_exchange_returns() {
+        let empty_envelope = json!({
+            "exchangeResponse": "{}",
+            "errorDetails": { "code": null, "message": null },
+        });
+        assert!(check_exchange_error(&empty_envelope).is_ok());
+        assert!(check_exchange_error(&json!({ "errorDetails": null })).is_ok());
+        assert!(check_exchange_error(&json!({})).is_ok());
+
+        let reported_failure = json!({
+            "errorDetails": { "code": 404, "message": "SessionNotFound" },
+        });
+        assert!(check_exchange_error(&reported_failure).is_err());
     }
 }
