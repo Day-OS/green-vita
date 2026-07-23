@@ -402,3 +402,4 @@ fn normalize_remote_candidate(candidate: &str) -> Option<String> {
     }
 
     Some(candidate.to_owned())
+}
