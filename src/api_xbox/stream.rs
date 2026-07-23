@@ -5,7 +5,13 @@ use reqwest::Method;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use tokio::time::{Duration, sleep};
+
+/// UDP port a console listens on for streaming sessions.
+const CONSOLE_STREAMING_PORT: u16 = 9002;
+/// First hextet of the `2001:0::/32` Teredo prefix.
+const TEREDO_PREFIX: u16 = 0x2001;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -237,11 +243,20 @@ impl Stream {
     }
 }
 
+/// The streaming service always answers with an `errorDetails` envelope. xHome fills it with
+/// `{"code":null,"message":null}` even on a successful exchange, so only a populated field marks
+/// a real failure.
 fn check_exchange_error(value: &Value) -> Result<()> {
-    if let Some(error_details) = value.get("errorDetails").filter(|v| !v.is_null()) {
-        anyhow::bail!("xCloud exchange failed: {error_details}");
+    let Some(error_details) = value.get("errorDetails").filter(|v| !v.is_null()) else {
+        return Ok(());
+    };
+    if error_details
+        .as_object()
+        .is_some_and(|fields| fields.values().all(Value::is_null))
+    {
+        return Ok(());
     }
-    Ok(())
+    anyhow::bail!("xCloud exchange failed: {error_details}");
 }
 
 fn extract_answer_sdp(response: &Value) -> Result<String> {
@@ -287,18 +302,30 @@ fn extract_remote_candidates(response: &Value) -> Vec<RTCIceCandidateInit> {
         return Vec::new();
     };
 
-    candidates
-        .iter()
-        .filter_map(decode_remote_candidate)
-        .collect()
+    let mut decoded = Vec::new();
+    for candidate in candidates {
+        let Some(candidate) = parse_remote_candidate(candidate) else {
+            continue;
+        };
+        // A console publishes itself over Teredo, so its reachable IPv4 endpoint only exists
+        // tunnelled inside the IPv6 candidate. Derive it before the address-family filter below
+        // drops that candidate, otherwise a home session is left with nothing to connect to.
+        decoded.extend(teredo_host_candidates(&candidate));
+        if let Some(candidate) = normalize_decoded_candidate(candidate) {
+            decoded.push(candidate);
+        }
+    }
+    decoded
 }
 
-fn decode_remote_candidate(candidate: &Value) -> Option<RTCIceCandidateInit> {
-    let mut candidate: RTCIceCandidateInit = match candidate {
+fn parse_remote_candidate(candidate: &Value) -> Option<RTCIceCandidateInit> {
+    match candidate {
         Value::String(value) => serde_json::from_str(value).ok(),
         value => serde_json::from_value(value.clone()).ok(),
-    }?;
+    }
+}
 
+fn normalize_decoded_candidate(mut candidate: RTCIceCandidateInit) -> Option<RTCIceCandidateInit> {
     candidate.candidate = normalize_remote_candidate(&candidate.candidate)?;
     if candidate.sdp_mid.as_deref() == Some("") {
         candidate.sdp_mid = Some("0".to_owned());
@@ -307,6 +334,50 @@ fn decode_remote_candidate(candidate: &Value) -> Option<RTCIceCandidateInit> {
         candidate.sdp_mline_index = Some(0);
     }
     Some(candidate)
+}
+
+/// Rebuilds the host candidates a Teredo address tunnels, matching how Greenlight reaches a
+/// console. Teredo (RFC 4380) stores the client's IPv4 address in the last 32 bits and its UDP
+/// port in bits 80..96, both one's-complemented, under the `2001:0::/32` prefix.
+fn teredo_host_candidates(candidate: &RTCIceCandidateInit) -> Vec<RTCIceCandidateInit> {
+    let Some((client, port)) = candidate_address(&candidate.candidate).and_then(teredo_endpoint)
+    else {
+        return Vec::new();
+    };
+
+    let derive = |foundation: u8, port: u16| RTCIceCandidateInit {
+        candidate: format!("candidate:{foundation} 1 UDP 1 {client} {port} typ host"),
+        sdp_mid: Some("0".to_owned()),
+        sdp_mline_index: Some(0),
+        username_fragment: candidate.username_fragment.clone(),
+        url: None,
+    };
+
+    let mut derived = vec![derive(10, CONSOLE_STREAMING_PORT)];
+    if port != CONSOLE_STREAMING_PORT {
+        derived.push(derive(11, port));
+    }
+    derived
+}
+
+fn candidate_address(candidate: &str) -> Option<&str> {
+    let candidate = candidate.trim();
+    let candidate = candidate.strip_prefix("a=").unwrap_or(candidate);
+    if !candidate.starts_with("candidate:") {
+        return None;
+    }
+    candidate.split_whitespace().nth(4)
+}
+
+fn teredo_endpoint(address: &str) -> Option<(Ipv4Addr, u16)> {
+    let segments = address.parse::<Ipv6Addr>().ok()?.segments();
+    if segments[0] != TEREDO_PREFIX || segments[1] != 0 {
+        return None;
+    }
+
+    let port = segments[5] ^ u16::MAX;
+    let client = (u32::from(segments[6]) << 16) | u32::from(segments[7]);
+    Some((Ipv4Addr::from(client ^ u32::MAX), port))
 }
 
 fn normalize_remote_candidate(candidate: &str) -> Option<String> {
@@ -331,4 +402,3 @@ fn normalize_remote_candidate(candidate: &str) -> Option<String> {
     }
 
     Some(candidate.to_owned())
-}
