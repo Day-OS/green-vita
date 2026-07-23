@@ -22,6 +22,7 @@ settings-rear-touch-enabled = Activer les commandes tactiles arrière
 settings-cloud-host = Hôte cloud : { $host }
 settings-home-host = Hôte local : { $host }
 settings-stream-debug-info = Afficher les infos de débogage du streaming
+settings-unlock-video-fps = Débloquer la vidéo à 60 FPS
 action-back = Retour
 
 mode-select-cloud-subtitle = Jeux via Xbox Cloud Gaming

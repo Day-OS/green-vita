@@ -22,6 +22,7 @@ settings-rear-touch-enabled = تمكين عناصر التحكم باللمس ا
 settings-cloud-host = مضيف السحابة: { $host }
 settings-home-host = المضيف المنزلي: { $host }
 settings-stream-debug-info = إظهار معلومات تصحيح أخطاء البث
+settings-unlock-video-fps = فتح الفيديو حتى 60 إطارًا في الثانية
 action-back = رجوع
 
 mode-select-cloud-subtitle = ألعاب عبر Xbox Cloud Gaming

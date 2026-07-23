@@ -23,8 +23,11 @@ pub(crate) enum PlaybackBackend {
 }
 
 impl PlaybackBackend {
-    pub(crate) fn start_xbox(stream: Stream) -> Result<Self> {
-        Ok(Self::Xbox(XboxStreamingBackend::start(stream)?))
+    pub(crate) fn start_xbox(stream: Stream, unlock_video_fps: bool) -> Result<Self> {
+        Ok(Self::Xbox(XboxStreamingBackend::start(
+            stream,
+            unlock_video_fps,
+        )?))
     }
 
     pub(crate) fn try_recv_event(&mut self) -> Option<PlaybackBackendEvent> {

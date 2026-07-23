@@ -19,16 +19,18 @@ pub(super) struct XboxRtcProtocol {
     input_channel_ready: bool,
     server_video_size: Option<(u32, u32)>,
     channel_ids: ChannelIds,
+    video_fps: u32,
 }
 
 impl XboxRtcProtocol {
-    pub(super) fn new(channel_ids: ChannelIds) -> Self {
+    pub(super) fn new(channel_ids: ChannelIds, video_fps: u32) -> Self {
         Self {
             handshake_stage: HandshakeStage::WaitingForChannels,
             input_queue: InputQueue::default(),
             input_channel_ready: false,
             server_video_size: None,
             channel_ids,
+            video_fps,
         }
     }
 
@@ -93,6 +95,7 @@ impl XboxRtcProtocol {
             &mut self.handshake_stage,
             channel_id,
             data,
+            self.video_fps,
         );
         if let Some(size) = channel::parse_server_video_size(&channel_ids, channel_id, data) {
             eprintln!("xCloud reported server video size: {size:?}");

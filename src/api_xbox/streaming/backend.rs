@@ -28,8 +28,8 @@ pub(crate) struct XboxStreamingBackend {
 }
 
 impl XboxStreamingBackend {
-    pub(crate) fn start(stream: Stream) -> Result<Self> {
-        let worker = worker::spawn(stream.clone())?;
+    pub(crate) fn start(stream: Stream, unlock_video_fps: bool) -> Result<Self> {
+        let worker = worker::spawn(stream.clone(), unlock_video_fps)?;
         Ok(Self {
             stream,
             worker,

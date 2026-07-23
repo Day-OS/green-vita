@@ -7,6 +7,7 @@ use rtc::peer_connection::RTCPeerConnection;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
@@ -30,24 +31,32 @@ pub(crate) struct VideoReceiver {
     pub(crate) received_packet: bool,
     last_stats_report: Instant,
     stats: VideoStats,
+    direct_output: Arc<DirectVideoOutput>,
+    present_interval: Duration,
+    next_present_at: Option<Instant>,
 }
 
 impl VideoReceiver {
     pub(crate) fn new(
         config: DecoderConfig,
         direct_output: Arc<DirectVideoOutput>,
+        video_fps: u32,
     ) -> Result<Self> {
+        let decoder = VideoDecodeWorker::spawn(config, Arc::clone(&direct_output))?;
         Ok(Self {
             track_id: None,
             receiver_id: None,
             ssrc: None,
             rtp: rtp::VideoRtp::new(),
-            decoder: VideoDecodeWorker::spawn(config, direct_output)?,
+            decoder,
             latest_frame: None,
             next_frame_id: 0,
             received_packet: false,
             last_stats_report: Instant::now(),
             stats: VideoStats::default(),
+            direct_output,
+            present_interval: Duration::from_nanos(1_000_000_000 / u64::from(video_fps.max(1))),
+            next_present_at: None,
         })
     }
 
@@ -92,6 +101,18 @@ impl VideoReceiver {
         {
             match result {
                 Ok(frame) => {
+                    if !presentation_due(
+                        &mut self.next_present_at,
+                        Instant::now(),
+                        self.present_interval,
+                    ) {
+                        self.direct_output
+                            .discard_pending(frame.texture_index, frame.generation);
+                        crate::streaming::video::metrics::METRICS
+                            .rate_limited
+                            .fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
                     self.next_frame_id = self.next_frame_id.wrapping_add(1);
                     self.latest_frame = Some((self.next_frame_id, frame));
                 }
@@ -148,6 +169,28 @@ impl VideoReceiver {
             self.stats.decode_errors,
         ))
     }
+}
+
+fn presentation_due(
+    next_present_at: &mut Option<Instant>,
+    now: Instant,
+    present_interval: Duration,
+) -> bool {
+    let Some(deadline) = *next_present_at else {
+        *next_present_at = Some(now + present_interval);
+        return true;
+    };
+    if now < deadline {
+        return false;
+    }
+
+    let next_deadline = deadline + present_interval;
+    *next_present_at = Some(if next_deadline > now {
+        next_deadline
+    } else {
+        now + present_interval
+    });
+    true
 }
 
 pub(crate) struct AudioReceiver {

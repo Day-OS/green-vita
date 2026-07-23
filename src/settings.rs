@@ -99,6 +99,8 @@ impl Locale {
 #[serde(default)]
 pub struct Settings {
     pub locale: Locale,
+    /// Requests and presents up to 60 FPS. Off by default to protect Vita performance.
+    pub unlock_video_fps: bool,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
     pub show_stream_debug_info: bool,
     pub game_profiles: HashMap<String, GameProfile>,
@@ -129,6 +131,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             locale: Locale::default(),
+            unlock_video_fps: false,
             show_stream_debug_info: false,
             game_profiles: HashMap::new(),
         }

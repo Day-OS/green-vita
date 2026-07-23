@@ -22,6 +22,7 @@ settings-rear-touch-enabled = Ativar controles do painel traseiro
 settings-cloud-host = Host da nuvem: { $host }
 settings-home-host = Host local: { $host }
 settings-stream-debug-info = Mostrar informações de depuração do streaming
+settings-unlock-video-fps = Desbloquear vídeo a 60 FPS
 action-back = Voltar
 
 mode-select-cloud-subtitle = Jogos via Xbox Cloud Gaming

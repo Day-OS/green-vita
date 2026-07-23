@@ -20,6 +20,7 @@ pub(in crate::api_xbox::streaming) fn handle_data_channel_message(
     handshake_stage: &mut HandshakeStage,
     channel_id: RTCDataChannelId,
     data: &[u8],
+    video_fps: u32,
 ) {
     if channel_id != ids.message || *handshake_stage != HandshakeStage::WaitingForHandshakeAck {
         return;
@@ -36,7 +37,7 @@ pub(in crate::api_xbox::streaming) fn handle_data_channel_message(
         let _ = control_channel.send_text(gamepad_changed(0, true).to_string());
     }
     if let Some(mut message_channel) = pc.data_channel(ids.message) {
-        for message in startup_messages() {
+        for message in startup_messages(video_fps) {
             let _ = message_channel.send_text(message.to_string());
         }
     }
@@ -132,7 +133,7 @@ pub fn generate_message(path: &str, data: Value) -> Value {
     })
 }
 
-pub fn startup_messages() -> Vec<Value> {
+pub fn startup_messages(video_fps: u32) -> Vec<Value> {
     let width = STREAM_WIDTH;
     let height = STREAM_HEIGHT;
 
@@ -162,7 +163,7 @@ pub fn startup_messages() -> Vec<Value> {
                 "supportsCustomResolution": true,
                 "supportsHevc": false,
                 "supportsHdr": false,
-                "supportsFps": 30,
+                "supportsFps": video_fps,
                 "maxWidth": width,
                 "maxHeight": height,
                 "maxBitrateKbps": 2000,
