@@ -1,6 +1,7 @@
 name: Build and release VPK
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -9,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-master
+  group: ${{ github.event_name == 'workflow_dispatch' && format('test-vpk-{0}', github.run_id) || 'release-master' }}
   cancel-in-progress: false
 
 jobs:
@@ -46,6 +47,7 @@ jobs:
           echo "version=v$version" >> "$GITHUB_OUTPUT"
 
       - name: Check whether release exists
+        if: github.event_name != 'workflow_dispatch'
         id: release
         uses: actions/github-script@v7
         env:
@@ -65,20 +67,30 @@ jobs:
             }
 
       - name: Build VPK
-        if: steps.release.outputs.exists == 'false'
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.exists == 'false'
         env:
           RUSTFLAGS: "-C target-feature=-neon"
         run: cargo vita build vpk --release
 
-      - name: Upload build artifact
-        if: steps.release.outputs.exists == 'false'
+      - name: Upload test VPK
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: green-vita-test-${{ github.run_number }}
+          path: target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload release build artifact
+        if: github.event_name != 'workflow_dispatch' && steps.release.outputs.exists == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: green-vita-${{ steps.version.outputs.version }}
           path: target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
+          if-no-files-found: error
 
       - name: Create GitHub release
-        if: steps.release.outputs.exists == 'false'
+        if: github.event_name != 'workflow_dispatch' && steps.release.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
