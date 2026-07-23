@@ -22,6 +22,7 @@ settings-rear-touch-enabled = Aktivera bakre pekskärmskontroller
 settings-cloud-host = Molnvärd: { $host }
 settings-home-host = Hemvärd: { $host }
 settings-stream-debug-info = Visa felsökningsinfo för strömning
+settings-unlock-video-fps = Lås upp video till 60 FPS
 action-back = Tillbaka
 
 mode-select-cloud-subtitle = Spel via Xbox Cloud Gaming

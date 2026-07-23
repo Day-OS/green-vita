@@ -15,6 +15,7 @@ pub enum Command {
     SetSwapShouldersAndTriggers { title_id: String, enabled: bool },
     SetRearTouchEnabled { title_id: String, enabled: bool },
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
+    SetUnlockVideoFps(bool),
     SetShowStreamDebugInfo(bool),
 }
 
@@ -25,6 +26,7 @@ enum SettingsRow {
     GameSwap { title_id: String, enabled: bool },
     GameRearTouch { title_id: String, enabled: bool },
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
+    UnlockVideoFps(bool),
     StreamDebug(bool),
     Back,
 }
@@ -66,6 +68,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
             .is_some_and(|profile| profile.front_touch_auxiliary_buttons);
         rows.push(SettingsRow::GameFrontTouchAuxiliary { title_id, enabled });
     }
+    rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
     rows.push(SettingsRow::StreamDebug(
         app.settings.show_stream_debug_info,
     ));
@@ -219,6 +222,17 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.unlock_video_fps,
+                    i18n.text("settings-unlock-video-fps"),
+                ) {
+                    commands
+                        .push(Command::SetUnlockVideoFps(!app.settings.unlock_video_fps).into());
+                }
+                row_index += 1;
+
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
@@ -392,6 +406,9 @@ impl App {
                     enabled: !enabled,
                 });
             }
+            SettingsRow::UnlockVideoFps(enabled) => {
+                return self.handle_settings_command(Command::SetUnlockVideoFps(!enabled));
+            }
             SettingsRow::StreamDebug(enabled) => {
                 return self.handle_settings_command(Command::SetShowStreamDebugInfo(!enabled));
             }
@@ -464,6 +481,10 @@ impl App {
             Command::SetFrontTouchAuxiliaryButtons { title_id, enabled } => {
                 self.settings
                     .set_front_touch_auxiliary_buttons(title_id, enabled);
+                self.settings.save();
+            }
+            Command::SetUnlockVideoFps(enabled) => {
+                self.settings.unlock_video_fps = enabled;
                 self.settings.save();
             }
             Command::SetShowStreamDebugInfo(enabled) => {

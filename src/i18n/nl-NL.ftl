@@ -22,6 +22,7 @@ settings-rear-touch-enabled = Bediening via achtertouchpad inschakelen
 settings-cloud-host = Cloudhost: { $host }
 settings-home-host = Thuishost: { $host }
 settings-stream-debug-info = Streaming-foutopsporingsinfo weergeven
+settings-unlock-video-fps = Video op 60 FPS ontgrendelen
 action-back = Terug
 
 mode-select-cloud-subtitle = Games via Xbox Cloud Gaming

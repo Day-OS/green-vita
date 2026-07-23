@@ -22,6 +22,7 @@ settings-rear-touch-enabled = Enable rear touch controls
 settings-cloud-host = Cloud host: { $host }
 settings-home-host = Home host: { $host }
 settings-stream-debug-info = Show streaming debug info
+settings-unlock-video-fps = Unlock video to 60 FPS
 action-back = Back
 
 mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles

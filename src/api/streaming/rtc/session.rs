@@ -23,6 +23,7 @@ pub(crate) struct RtcSessionConfig {
     pub route_probe: &'static str,
     pub audio_sample_rate: u32,
     pub audio_payload_type: u8,
+    pub video_fps: u32,
     pub decoder: DecoderConfig,
 }
 
@@ -67,7 +68,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     ) -> Result<Self> {
         let transport =
             RtcTransport::bind(&mut peer, config.stun_server, config.route_probe).await?;
-        let video = VideoReceiver::new(config.decoder, direct_output)?;
+        let video = VideoReceiver::new(config.decoder, direct_output, config.video_fps)?;
 
         Ok(Self {
             peer,

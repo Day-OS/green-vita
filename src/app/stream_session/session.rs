@@ -35,8 +35,9 @@ impl StreamingSession {
         kind: StreamKind,
         title_id: Option<String>,
         return_selected: usize,
+        unlock_video_fps: bool,
     ) -> Result<Self> {
-        let backend = PlaybackBackend::start_xbox(stream)?;
+        let backend = PlaybackBackend::start_xbox(stream, unlock_video_fps)?;
         let return_target = match kind {
             StreamKind::Cloud => StreamReturnTarget::Titles(return_selected),
             StreamKind::Home => StreamReturnTarget::Consoles(return_selected),

@@ -224,6 +224,7 @@ impl App {
                     session.kind,
                     title_id,
                     session.return_selected,
+                    self.settings.unlock_video_fps,
                 ) {
                     Ok(streaming) => Ok(AppState::Streaming(streaming)),
                     Err(error) => {

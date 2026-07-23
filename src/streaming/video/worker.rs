@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-// Faster streams arrive in larger bursts. Keep the normal 30 fps limit small, but
-// allow enough room for roughly 100 ms of compressed video near the observed 55 fps.
-const MIN_PENDING_ACCESS_UNITS: usize = 2;
+// Keep only one compressed frame queued at the default 30 FPS to minimize glass-to-glass
+// latency. Faster streams may still use a larger burst buffer.
+const MIN_PENDING_ACCESS_UNITS: usize = 1;
 const MAX_PENDING_ACCESS_UNITS: usize = 6;
 
 struct QueuedAccessUnit {

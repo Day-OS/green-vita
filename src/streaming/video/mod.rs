@@ -7,6 +7,8 @@ pub const STREAM_WIDTH: u32 = 1280;
 pub const STREAM_HEIGHT: u32 = 720;
 pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
+pub(crate) const DEFAULT_VIDEO_FPS: u32 = 30;
+pub(crate) const UNLOCKED_VIDEO_FPS: u32 = 60;
 
 pub use memory::reserve_decoder_cdram;
 pub use metrics::video_performance_summary;
@@ -16,9 +18,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-// Let a short render hitch absorb at most two 30 fps intervals. Together with the
-// frame already pending for presentation, this caps the microbuffer at three frames.
-const MAX_PENDING_TEXTURE_WAIT: Duration = Duration::from_millis(67);
+// Wait at most about one Vita refresh before replacing an unpresented decoded frame.
+const MAX_PENDING_TEXTURE_WAIT: Duration = Duration::from_millis(16);
 
 #[derive(Clone, Copy)]
 pub(crate) struct VideoTextureTarget {
@@ -88,6 +89,21 @@ impl DirectVideoOutput {
             }
         }
         if cleared_pending {
+            self.frame_displayed.notify_one();
+        }
+    }
+
+    /// Releases a decoded frame intentionally omitted by the presentation-rate limiter.
+    /// The currently displayed texture remains unchanged, so the decoder cannot overwrite it.
+    pub(crate) fn discard_pending(&self, index: usize, generation: u64) {
+        let mut discarded = false;
+        if let Ok(mut state) = self.state.lock()
+            && state.pending == Some((index, generation))
+        {
+            state.pending = None;
+            discarded = true;
+        }
+        if discarded {
             self.frame_displayed.notify_one();
         }
     }

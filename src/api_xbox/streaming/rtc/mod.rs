@@ -1,5 +1,6 @@
 pub mod peer;
 pub(in crate::api_xbox::streaming) mod protocol;
+mod sdp;
 pub mod worker;
 
 pub(super) const STUN_SERVER: &str = "stun.l.google.com:19302";

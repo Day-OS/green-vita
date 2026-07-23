@@ -15,9 +15,9 @@ use rtc::rtp_transceiver::rtp_sender::{
     RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
 };
 
-pub(super) fn create() -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
+pub(super) fn create(video_fps: u32) -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
     let mut media_engine = MediaEngine::default();
-    register_vita_codecs(&mut media_engine).context("failed to register Vita codecs")?;
+    register_vita_codecs(&mut media_engine, video_fps).context("failed to register Vita codecs")?;
 
     let (peer_connection, ids) = peer::create(
         media_engine,
@@ -42,10 +42,13 @@ pub(super) fn create() -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
         message: ids[3],
     };
 
-    Ok((peer_connection, XboxRtcProtocol::new(channel_ids)))
+    Ok((
+        peer_connection,
+        XboxRtcProtocol::new(channel_ids, video_fps),
+    ))
 }
 
-fn register_vita_codecs(media_engine: &mut MediaEngine) -> Result<()> {
+fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32) -> Result<()> {
     media_engine.register_codec(
         RTCRtpCodecParameters {
             rtp_codec: RTCRtpCodec {
@@ -66,9 +69,10 @@ fn register_vita_codecs(media_engine: &mut MediaEngine) -> Result<()> {
                 mime_type: MIME_TYPE_H264.to_owned(),
                 clock_rate: 90_000,
                 channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=0;packetization-mode=1;profile-level-id=42e020;max-fs=3600;max-mbps=108000"
-                        .to_owned(),
+                sdp_fmtp_line: format!(
+                    "level-asymmetry-allowed=0;packetization-mode=1;profile-level-id={}",
+                    h264_profile_level_id(video_fps)
+                ),
                 rtcp_feedback: vec![
                     RTCPFeedback {
                         typ: "goog-remb".to_owned(),
@@ -94,4 +98,19 @@ fn register_vita_codecs(media_engine: &mut MediaEngine) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+fn h264_profile_level_id(video_fps: u32) -> &'static str {
+    if video_fps > 30 { "42e020" } else { "42e01f" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::h264_profile_level_id;
+
+    #[test]
+    fn selects_h264_level_for_requested_frame_rate() {
+        assert_eq!(h264_profile_level_id(30), "42e01f");
+        assert_eq!(h264_profile_level_id(60), "42e020");
+    }
 }
