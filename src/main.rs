@@ -1,6 +1,7 @@
 use vita_newlib_shims as _;
 
 mod api;
+mod api_geforce_now;
 mod api_xbox;
 mod app;
 mod i18n;

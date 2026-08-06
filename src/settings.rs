@@ -99,6 +99,7 @@ impl Locale {
 #[serde(default)]
 pub struct Settings {
     pub locale: Locale,
+    pub onboarding_complete: bool,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
     pub show_stream_debug_info: bool,
     pub game_profiles: HashMap<String, GameProfile>,
@@ -129,6 +130,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             locale: Locale::default(),
+            onboarding_complete: false,
             show_stream_debug_info: false,
             game_profiles: HashMap::new(),
         }

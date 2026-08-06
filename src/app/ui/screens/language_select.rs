@@ -82,7 +82,7 @@ impl App {
     pub(crate) fn handle_language_select_command(&mut self, command: Command) {
         match command {
             Command::ActivateSelected => self.activate_selected_language_row(),
-            Command::Continue => self.request_device_code(),
+            Command::Continue => self.finish_language_selection(),
         }
     }
 
@@ -95,7 +95,13 @@ impl App {
         if let Some(locale) = Locale::ALL.get(selected).copied() {
             self.set_locale(locale);
         } else if selected == CONTINUE_INDEX {
-            self.request_device_code();
+            self.finish_language_selection();
         }
+    }
+
+    fn finish_language_selection(&mut self) {
+        self.settings.onboarding_complete = true;
+        self.settings.save();
+        self.set_state(AppState::ProviderSelect { selected: 0 });
     }
 }

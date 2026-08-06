@@ -13,6 +13,9 @@ pub fn build_ui(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) -> V
         AppState::LanguageSelect { .. } => {
             screens::language_select::show(ctx, app, &mut commands);
         }
+        AppState::ProviderSelect { .. } => {
+            screens::provider_select::show(ctx, app, &mut commands);
+        }
         AppState::Streaming(streaming) if streaming.paused => {
             screens::paused_overlay::show(ctx, app, &mut commands);
         }
@@ -27,6 +30,7 @@ pub fn build_ui(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) -> V
         }
         AppState::InitializeAuthentication
         | AppState::RequestingDeviceCode(_)
+        | AppState::RequestingNvidiaDeviceCode(_)
         | AppState::LoadingCredentials(_) => {
             screens::signing_in::show(ctx, app);
         }
@@ -37,6 +41,9 @@ pub fn build_ui(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) -> V
             screens::error::show(ctx, app, &mut commands);
         }
         AppState::WaitingForDeviceAuthorization { .. } => {
+            screens::token_setup::show(ctx, app);
+        }
+        AppState::WaitingForNvidiaDeviceAuthorization { .. } => {
             screens::token_setup::show(ctx, app);
         }
         AppState::ModeSelect { .. } => {

@@ -1,6 +1,8 @@
 use super::image::{self, TitleImage};
+use crate::api::CloudProvider;
 use crate::api::catalog::worker::CatalogWorker;
 use crate::api::catalog::{Game, GameCatalogBackend};
+use crate::api_geforce_now::auth::NvidiaAuth;
 use crate::{ApiClient, ApiClientConfig, Console, MsalAuth};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -8,6 +10,8 @@ use std::sync::Arc;
 pub(crate) struct Service {
     pub(crate) api: ApiClient,
     pub(super) auth: MsalAuth,
+    pub(super) nvidia_auth: NvidiaAuth,
+    pub(crate) cloud_provider: CloudProvider,
     pub(crate) titles: Vec<Game>,
     pub(crate) consoles: Vec<Console>,
     pub(crate) catalog_worker: CatalogWorker,
@@ -32,6 +36,8 @@ impl Service {
         Self {
             api,
             auth: MsalAuth::new(),
+            nvidia_auth: NvidiaAuth::new(),
+            cloud_provider: CloudProvider::Xbox,
             titles: Vec::new(),
             consoles: Vec::new(),
             catalog_worker,
@@ -48,7 +54,10 @@ impl Service {
     }
 
     pub(super) fn logout(&mut self) {
-        self.auth.logout();
+        match self.cloud_provider {
+            CloudProvider::Xbox => self.auth.logout(),
+            CloudProvider::GeForceNow => self.nvidia_auth.logout(),
+        }
         self.titles.clear();
         self.consoles.clear();
         self.avatar = None;
@@ -74,7 +83,14 @@ impl Service {
     }
 
     pub(super) fn refresh_xcloud_catalog_backend(&mut self) {
+        self.cloud_provider = CloudProvider::Xbox;
         self.catalog_backend = GameCatalogBackend::xcloud(self.api.clone());
+        self.restart_catalog_worker();
+    }
+
+    pub(super) fn use_geforce_now_catalog_backend(&mut self) {
+        self.cloud_provider = CloudProvider::GeForceNow;
+        self.catalog_backend = GameCatalogBackend::geforce_now(self.nvidia_auth.clone());
         self.restart_catalog_worker();
     }
 }

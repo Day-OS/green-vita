@@ -56,7 +56,13 @@ fn title_rows(
     if app.service.titles.is_empty() {
         return vec![
             (i18n.text("title-none-returned"), None),
-            (i18n.text("title-token-hint"), None),
+            (
+                i18n.text(match app.service.cloud_provider {
+                    crate::api::CloudProvider::Xbox => "title-token-hint",
+                    crate::api::CloudProvider::GeForceNow => "title-nvidia-token-hint",
+                }),
+                None,
+            ),
         ];
     }
     filtered
@@ -293,10 +299,22 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                                 .corner_radius(8.0);
                                 let button_width = ui.available_width();
                                 if ui
-                                    .add_sized(egui::vec2(button_width, 44.0), play_button)
+                                    .add_enabled_ui(
+                                        app.service.catalog_backend.supports_streaming(),
+                                        |ui| {
+                                            ui.add_sized(
+                                                egui::vec2(button_width, 44.0),
+                                                play_button,
+                                            )
+                                        },
+                                    )
+                                    .inner
                                     .clicked()
                                 {
                                     commands.push(InputCommand::Confirm.into());
+                                }
+                                if !app.service.catalog_backend.supports_streaming() {
+                                    ui.colored_label(theme.text, i18n.text("title-browse-only"));
                                 }
                             });
                         },
@@ -575,6 +593,9 @@ impl App {
                 }
             }
             InputCommand::Confirm => {
+                if !self.service.catalog_backend.supports_streaming() {
+                    return Ok(());
+                }
                 let AppState::TitleList { selected } = &self.state else {
                     return Ok(());
                 };
@@ -596,7 +617,12 @@ impl App {
                 });
             }
             InputCommand::Back => {
-                self.set_state(AppState::ModeSelect { selected: 0 });
+                self.set_state(match self.service.cloud_provider {
+                    crate::api::CloudProvider::Xbox => AppState::ModeSelect { selected: 0 },
+                    crate::api::CloudProvider::GeForceNow => {
+                        AppState::ProviderSelect { selected: 1 }
+                    }
+                });
             }
         }
 

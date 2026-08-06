@@ -1,6 +1,7 @@
 use super::App;
 use super::stream_session::{ConnectingStream, StreamStartTarget, StreamingSession};
 use crate::api::catalog::Game;
+use crate::api_geforce_now::auth::{DeviceCodeAuth as NvidiaDeviceCodeAuth, NvidiaAuth};
 use crate::{
     ConsolesResponse, DeviceCodeAuth, MsalAuth, Stream, StreamState, StreamingCredentials,
     WaitTimeResponse, XboxProfile,
@@ -18,10 +19,18 @@ pub(crate) enum AppState {
     LanguageSelect {
         selected: usize,
     },
+    ProviderSelect {
+        selected: usize,
+    },
     RequestingDeviceCode(JoinHandle<Result<DeviceCodeAuth>>),
     WaitingForDeviceAuthorization {
         device_code: DeviceCodeAuth,
         job: JoinHandle<Result<MsalAuth>>,
+    },
+    RequestingNvidiaDeviceCode(JoinHandle<Result<NvidiaDeviceCodeAuth>>),
+    WaitingForNvidiaDeviceAuthorization {
+        device_code: NvidiaDeviceCodeAuth,
+        job: JoinHandle<Result<NvidiaAuth>>,
     },
     LoadingCredentials(JoinHandle<Result<CredentialsLoadResult>>),
     ModeSelect {
@@ -106,8 +115,8 @@ impl App {
     pub async fn tick(&mut self) -> Result<()> {
         match &self.state {
             AppState::InitializeAuthentication => {
-                if self.service.auth.has_saved_login() {
-                    self.load_credentials();
+                if self.settings.onboarding_complete || self.service.auth.has_saved_login() {
+                    self.set_state(AppState::ProviderSelect { selected: 0 });
                 } else {
                     let selected = crate::Locale::ALL
                         .iter()
@@ -117,7 +126,9 @@ impl App {
                 }
             }
             AppState::RequestingDeviceCode(_)
+            | AppState::RequestingNvidiaDeviceCode(_)
             | AppState::WaitingForDeviceAuthorization { .. }
+            | AppState::WaitingForNvidiaDeviceAuthorization { .. }
             | AppState::LoadingCredentials(_)
             | AppState::LoadingTitles(_)
             | AppState::LoadingConsoles(_) => self.pump_entry_state().await?,
@@ -130,6 +141,7 @@ impl App {
             }
             AppState::TitleList { .. } => self.pump_title_details().await?,
             AppState::LanguageSelect { .. }
+            | AppState::ProviderSelect { .. }
             | AppState::ModeSelect { .. }
             | AppState::ConsoleList { .. }
             | AppState::Settings { .. }

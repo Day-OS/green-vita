@@ -7,6 +7,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App) {
     let message_key = match &app.state {
         AppState::InitializeAuthentication => "signing-in-starting",
         AppState::RequestingDeviceCode(_) => "signing-in-requesting-code",
+        AppState::RequestingNvidiaDeviceCode(_) => "signing-in-requesting-nvidia-code",
         AppState::LoadingCredentials(_) => "signing-in-loading-credentials",
         _ => return,
     };

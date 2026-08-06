@@ -110,7 +110,7 @@ impl App {
                 let kind = OPTIONS[*selected];
                 self.choose_stream_kind(kind)?;
             }
-            InputCommand::Back => {}
+            InputCommand::Back => self.set_state(AppState::ProviderSelect { selected: 0 }),
         }
 
         Ok(())

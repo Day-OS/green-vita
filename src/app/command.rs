@@ -101,6 +101,7 @@ impl App {
 
         match &self.state {
             AppState::LanguageSelect { .. } => self.handle_language_select_input(command),
+            AppState::ProviderSelect { .. } => self.handle_provider_select_input(command),
             AppState::StartingStream { .. } | AppState::Connecting { .. } => {
                 self.handle_connecting_input(command).await
             }
@@ -117,8 +118,15 @@ impl App {
             }
             AppState::Error { retry_sign_in, .. } => {
                 if command == InputCommand::Back {
-                    if *retry_sign_in {
-                        self.set_state(AppState::InitializeAuthentication);
+                    if *retry_sign_in
+                        || self.service.cloud_provider == crate::api::CloudProvider::GeForceNow
+                    {
+                        self.set_state(AppState::ProviderSelect {
+                            selected: usize::from(
+                                self.service.cloud_provider
+                                    == crate::api::CloudProvider::GeForceNow,
+                            ),
+                        });
                     } else {
                         self.set_state(AppState::ModeSelect { selected: 0 });
                     }

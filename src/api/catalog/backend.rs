@@ -1,4 +1,6 @@
 use super::{Game, GameDetails, cache};
+use crate::api_geforce_now::auth::NvidiaAuth;
+use crate::api_geforce_now::catalog as geforce_now_catalog;
 use crate::api_xbox::api::ApiClient;
 use crate::api_xbox::game_catalog;
 use anyhow::Result;
@@ -8,6 +10,7 @@ use reqwest::Client;
 #[derive(Clone)]
 pub enum GameCatalogBackend {
     XCloud { api: ApiClient },
+    GeForceNow { auth: NvidiaAuth },
 }
 
 impl GameCatalogBackend {
@@ -15,16 +18,26 @@ impl GameCatalogBackend {
         Self::XCloud { api }
     }
 
+    pub fn geforce_now(auth: NvidiaAuth) -> Self {
+        Self::GeForceNow { auth }
+    }
+
+    pub fn supports_streaming(&self) -> bool {
+        matches!(self, Self::XCloud { .. })
+    }
+
     /// Stable namespace used to keep cache entries from different providers apart.
     pub fn cache_namespace(&self) -> &'static str {
         match self {
             Self::XCloud { .. } => "xcloud",
+            Self::GeForceNow { .. } => "geforce-now",
         }
     }
 
     pub async fn load_games(&self) -> Result<Vec<Game>> {
         let result = match self {
             Self::XCloud { api } => game_catalog::load_games(api).await,
+            Self::GeForceNow { auth } => geforce_now_catalog::load_games(auth).await,
         };
 
         match result {
@@ -56,6 +69,9 @@ impl GameCatalogBackend {
         match self {
             Self::XCloud { .. } => {
                 game_catalog::fetch_details(client, metadata_id, market, language).await
+            }
+            Self::GeForceNow { .. } => {
+                anyhow::bail!("GeForce NOW games already include their catalog metadata")
             }
         }
     }

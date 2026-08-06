@@ -4,6 +4,7 @@ pub mod error;
 pub mod language_select;
 pub mod mode_select;
 pub mod paused_overlay;
+pub mod provider_select;
 pub mod settings;
 pub mod signing_in;
 pub mod streaming;

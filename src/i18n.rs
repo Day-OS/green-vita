@@ -30,10 +30,13 @@ impl I18n {
     pub fn screen_title(&self, state: &AppState) -> String {
         self.text(match state {
             AppState::LanguageSelect { .. } => "screen-language-select",
+            AppState::ProviderSelect { .. } => "screen-provider-select",
             AppState::InitializeAuthentication
             | AppState::RequestingDeviceCode(_)
+            | AppState::RequestingNvidiaDeviceCode(_)
             | AppState::LoadingCredentials(_) => "screen-signing-in",
-            AppState::WaitingForDeviceAuthorization { .. } => "screen-token-setup",
+            AppState::WaitingForDeviceAuthorization { .. }
+            | AppState::WaitingForNvidiaDeviceAuthorization { .. } => "screen-token-setup",
             AppState::ModeSelect { .. } => "screen-mode-select",
             AppState::LoadingTitles(_) | AppState::TitleList { .. } => "screen-cloud-titles",
             AppState::LoadingConsoles(_) | AppState::ConsoleList { .. } => "screen-consoles",

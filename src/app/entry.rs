@@ -1,8 +1,12 @@
 use super::state::CredentialsLoadResult;
 use super::stream_session::cleanup_active_sessions;
 use super::{App, AppState, PollJob, poll_job};
+use crate::api::CloudProvider;
 use crate::api::catalog::Game;
 use crate::api::catalog::worker::ImageKind;
+use crate::api_geforce_now::auth::{
+    DeviceCodeAuth as NvidiaDeviceCodeAuth, DeviceCodePoll as NvidiaDeviceCodePoll, NvidiaAuth,
+};
 use crate::{DeviceCodeAuth, DeviceCodePoll, MsalAuth, StreamKind};
 use anyhow::Result;
 use tokio::task::JoinHandle;
@@ -10,6 +14,15 @@ use tokio::task::JoinHandle;
 const AVATAR_KEY: &str = "__avatar__";
 
 impl App {
+    pub(super) fn choose_cloud_provider(&mut self, provider: CloudProvider) {
+        self.service.cloud_provider = provider;
+        match provider {
+            CloudProvider::Xbox if self.service.auth.has_saved_login() => self.load_credentials(),
+            CloudProvider::Xbox => self.request_device_code(),
+            CloudProvider::GeForceNow => self.request_nvidia_device_code(),
+        }
+    }
+
     pub(super) fn load_credentials(&mut self) {
         let mut auth = self.service.auth.clone();
         self.set_state(AppState::LoadingCredentials(tokio::spawn(async move {
@@ -44,6 +57,13 @@ impl App {
         })));
     }
 
+    pub(super) fn request_nvidia_device_code(&mut self) {
+        let auth = self.service.nvidia_auth.clone();
+        self.set_state(AppState::RequestingNvidiaDeviceCode(tokio::spawn(
+            async move { auth.request_device_code().await },
+        )));
+    }
+
     pub(super) fn choose_stream_kind(&mut self, kind: StreamKind) -> Result<()> {
         self.enter_entrypoint(kind)
     }
@@ -71,8 +91,15 @@ impl App {
 
         match state {
             AppState::RequestingDeviceCode(job) => self.pump_device_code_request(job).await,
+            AppState::RequestingNvidiaDeviceCode(job) => {
+                self.pump_nvidia_device_code_request(job).await
+            }
             AppState::WaitingForDeviceAuthorization { device_code, job } => {
                 self.pump_device_authorization_check(device_code, job).await;
+            }
+            AppState::WaitingForNvidiaDeviceAuthorization { device_code, job } => {
+                self.pump_nvidia_device_authorization_check(device_code, job)
+                    .await;
             }
             AppState::LoadingCredentials(job) => self.pump_credentials(job).await,
             AppState::LoadingTitles(job) => self.pump_titles(job).await,
@@ -81,6 +108,74 @@ impl App {
         }
 
         Ok(())
+    }
+
+    async fn pump_nvidia_device_code_request(
+        &mut self,
+        job: JoinHandle<Result<NvidiaDeviceCodeAuth>>,
+    ) {
+        match poll_job(job).await {
+            PollJob::Pending(job) => self.state = AppState::RequestingNvidiaDeviceCode(job),
+            PollJob::Done(Ok(device_code)) => {
+                let job = self.spawn_nvidia_device_authorization_poll(&device_code);
+                self.set_state(AppState::WaitingForNvidiaDeviceAuthorization { device_code, job });
+            }
+            PollJob::Done(Err(error)) => {
+                self.set_localized_error_screen("error-sign-in-request", format!("{error:#}"));
+            }
+        }
+    }
+
+    async fn pump_nvidia_device_authorization_check(
+        &mut self,
+        device_code: NvidiaDeviceCodeAuth,
+        job: JoinHandle<Result<NvidiaAuth>>,
+    ) {
+        match poll_job(job).await {
+            PollJob::Pending(job) => {
+                self.state = AppState::WaitingForNvidiaDeviceAuthorization { device_code, job };
+            }
+            PollJob::Done(Ok(auth)) => {
+                self.service.nvidia_auth = auth;
+                self.service.use_geforce_now_catalog_backend();
+                let catalog = self.service.catalog_backend.clone();
+                self.set_state(AppState::LoadingTitles(tokio::spawn(async move {
+                    catalog.load_games().await
+                })));
+            }
+            PollJob::Done(Err(error)) => {
+                eprintln!("GeForce NOW sign-in check failed: {error:#}");
+                self.request_nvidia_device_code();
+            }
+        }
+    }
+
+    fn spawn_nvidia_device_authorization_poll(
+        &self,
+        device_code: &NvidiaDeviceCodeAuth,
+    ) -> JoinHandle<Result<NvidiaAuth>> {
+        let mut auth = self.service.nvidia_auth.clone();
+        let device_code = device_code.clone();
+        tokio::spawn(async move {
+            let mut retry_after = device_code.poll_interval;
+            loop {
+                tokio::time::sleep(retry_after).await;
+                if device_code.is_expired() {
+                    anyhow::bail!("GeForce NOW device code expired");
+                }
+                match auth.poll_device_code(&device_code).await {
+                    Ok(NvidiaDeviceCodePoll::Authorized) => return Ok(auth),
+                    Ok(NvidiaDeviceCodePoll::Pending(next_retry)) => retry_after = next_retry,
+                    Ok(NvidiaDeviceCodePoll::Restart) => {
+                        anyhow::bail!("GeForce NOW device code expired")
+                    }
+                    Err(error) => {
+                        eprintln!("GeForce NOW sign-in poll failed, retrying: {error:#}");
+                        retry_after = device_code.poll_interval;
+                    }
+                }
+            }
+        })
     }
 
     async fn pump_device_code_request(&mut self, job: JoinHandle<Result<DeviceCodeAuth>>) {

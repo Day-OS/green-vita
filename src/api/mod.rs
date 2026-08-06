@@ -6,3 +6,9 @@
 
 pub mod catalog;
 pub(crate) mod streaming;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloudProvider {
+    Xbox,
+    GeForceNow,
+}
