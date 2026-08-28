@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 const PUMP_SLEEP: Duration = Duration::from_millis(1);
 const PUMP_ERROR_SLEEP: Duration = Duration::from_millis(100);
 const GAMEPAD_PULSE_DURATION: Duration = Duration::from_millis(100);
-const GAMEPAD_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_PENDING_COMMANDS: usize = 16;
 const MAX_PENDING_EVENTS: usize = 32;
 const MAX_PENDING_AUDIO_BATCHES: usize = 16;
@@ -232,7 +231,6 @@ async fn run_session<B: super::session::RtcSessionBackend>(
     let mut last_server_video_size = session.backend.server_video_size();
     let mut consecutive_pump_errors = 0u32;
     let mut active_gamepad_pulse: Option<(GamepadFrame, Instant)> = None;
-    let mut last_gamepad_sent: Option<(GamepadFrame, Instant)> = None;
 
     loop {
         if !drain_commands(&mut session, &commands_rx) {
@@ -260,7 +258,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
                 let sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
                 });
-                send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, true);
+                send_sampled_gamepad_frame(&mut session, sampled);
             } else if pulse_started || latest.is_some() {
                 let mut sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
@@ -268,15 +266,10 @@ async fn run_session<B: super::session::RtcSessionBackend>(
                 // Guide/Nexus is currently the only pulsed input. Keep it asserted while normal
                 // gamepad frames continue to flow instead of immediately overwriting the press.
                 sampled.frame.nexus = sampled.frame.nexus.max(pulse.nexus);
-                send_sampled_gamepad_frame(
-                    &mut session,
-                    sampled,
-                    &mut last_gamepad_sent,
-                    pulse_started,
-                );
+                send_sampled_gamepad_frame(&mut session, sampled);
             }
         } else if let Some(sampled) = latest {
-            send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, false);
+            send_sampled_gamepad_frame(&mut session, sampled);
         }
 
         let local_candidates = match session.pump().await {
@@ -357,23 +350,13 @@ async fn run_session<B: super::session::RtcSessionBackend>(
 fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
     session: &mut RtcSession<B>,
     sampled: SampledGamepadFrame,
-    last_sent: &mut Option<(GamepadFrame, Instant)>,
-    force: bool,
 ) {
-    let now = Instant::now();
-    let unchanged_and_fresh = last_sent.as_ref().is_some_and(|(previous, sent_at)| {
-        *previous == sampled.frame && now.duration_since(*sent_at) < GAMEPAD_REFRESH_INTERVAL
-    });
-    if !force && unchanged_and_fresh {
-        return;
-    }
-
-    if session
+    // Always forward the latest sample, even when it is identical to the last one sent: the
+    // input channel is unreliable (max_retransmits: 0), so a held/unchanged control has to keep
+    // being resent every tick or a dropped packet leaves the host stuck until the state changes.
+    session
         .backend
-        .send_gamepad_frame(&mut session.peer, sampled.frame.clone())
-    {
-        *last_sent = Some((sampled.frame, now));
-    }
+        .send_gamepad_frame(&mut session.peer, sampled.frame);
 }
 
 fn drain_commands<B: super::session::RtcSessionBackend>(
