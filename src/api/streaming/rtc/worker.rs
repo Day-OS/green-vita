@@ -1,8 +1,8 @@
 use crate::api::streaming::rtc::session::{RtcSession, RtcSessionConfig};
+use crate::streaming::audio::AudioPacket;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
 use anyhow::{Context, Result};
-use bytes::Bytes;
 use rtc::peer_connection::RTCPeerConnection;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::state::RTCPeerConnectionState;
@@ -50,7 +50,7 @@ struct SampledGamepadFrame {
 pub struct RtcWorker {
     commands_tx: SyncSender<RtcWorkerCommand>,
     pub(crate) events_rx: Receiver<RtcWorkerEvent>,
-    pub(crate) audio_rx: Receiver<Vec<Bytes>>,
+    pub(crate) audio_rx: Receiver<Vec<AudioPacket>>,
     pub(crate) latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
@@ -149,7 +149,7 @@ fn run_worker_thread<P: RtcWorkerProvider>(
     provider: P,
     commands_rx: Receiver<RtcWorkerCommand>,
     events_tx: SyncSender<RtcWorkerEvent>,
-    audio_tx: SyncSender<Vec<Bytes>>,
+    audio_tx: SyncSender<Vec<AudioPacket>>,
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
@@ -221,7 +221,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
     mut session: RtcSession<B>,
     commands_rx: Receiver<RtcWorkerCommand>,
     events_tx: SyncSender<RtcWorkerEvent>,
-    audio_tx: SyncSender<Vec<Bytes>>,
+    audio_tx: SyncSender<Vec<AudioPacket>>,
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
