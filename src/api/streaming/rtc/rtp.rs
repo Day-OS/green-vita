@@ -26,15 +26,18 @@ impl AudioRtp {
         Self { payload_type }
     }
 
-    /// Hands the raw RTP payload straight to the jitter buffer in `streaming::audio` - Opus (and
-    /// the RED envelope it might be wrapped in) is never fragmented across RTP packets, so there
-    /// is nothing to reassemble here, only sequencing to do further down.
-    pub(super) fn receive(&mut self, packet: Packet, audio_packets: &mut Vec<AudioPacket>) {
+    /// Hands the raw RTP payload straight to the jitter buffer's decode worker - Opus (and the
+    /// RED envelope it might be wrapped in) is never fragmented across RTP packets, so there is
+    /// nothing to reassemble here, only sequencing to do further down. Submitted directly from
+    /// this RTP-receiving call, not batched for the shell's render loop to pick up later: the
+    /// jitter buffer's reordering window is thin enough that render-frame-cadence delay was
+    /// enough on its own to make merely-late packets look lost.
+    pub(super) fn receive(&mut self, packet: Packet) {
         let payload_type = packet.header.payload_type;
         if payload_type != self.payload_type && payload_type != RED_PAYLOAD_TYPE {
             return;
         }
-        audio_packets.push(AudioPacket {
+        crate::streaming::audio::submit_packet(AudioPacket {
             payload: packet.payload,
             sequence: packet.header.sequence_number,
             payload_type,

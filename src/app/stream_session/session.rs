@@ -1,6 +1,5 @@
 use crate::api::streaming::{PlaybackBackend, PlaybackBackendEvent};
 use crate::settings::Settings;
-use crate::streaming::audio::AudioPacket;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use crate::{Stream, StreamKind};
@@ -25,7 +24,6 @@ pub(crate) struct StreamingSession {
     latest_video_frame: Option<u64>,
     current_video_frame: Option<DecodedFrame>,
     stream_video_size: Option<(u32, u32)>,
-    pending_audio_packets: Vec<AudioPacket>,
     ignore_confirm_until_release: bool,
 }
 
@@ -52,7 +50,6 @@ impl StreamingSession {
             latest_video_frame: None,
             current_video_frame: None,
             stream_video_size: None,
-            pending_audio_packets: Vec::new(),
             ignore_confirm_until_release: false,
         })
     }
@@ -60,10 +57,6 @@ impl StreamingSession {
     pub(crate) fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
         self.hint_started_at = Instant::now();
-    }
-
-    pub(crate) fn take_audio_packets(&mut self) -> Vec<AudioPacket> {
-        std::mem::take(&mut self.pending_audio_packets)
     }
 
     pub(crate) fn video_frame(&self) -> Option<(u64, &DecodedFrame)> {
@@ -128,9 +121,6 @@ impl StreamingSession {
         let mut events = Vec::new();
         while let Some(event) = self.backend.try_recv_event() {
             events.push(event);
-        }
-        while let Some(mut packets) = self.backend.try_recv_audio_packets() {
-            self.pending_audio_packets.append(&mut packets);
         }
 
         if let Some((frame_id, frame)) = self.backend.take_latest_frame() {

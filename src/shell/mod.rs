@@ -200,8 +200,11 @@ pub async fn run(mut app: App) -> Result<()> {
         );
 
         app.tick().await?;
-        if let Some(streaming) = app.state.streaming_mut() {
-            audio_renderer.submit_packets(streaming.take_audio_packets());
+        if app.state.streaming().is_some() {
+            // Audio packets themselves already reached the decode worker directly from the RTC
+            // thread (see `streaming::audio::submit_packet`); this only pumps decoded PCM into
+            // the SDL queue and manages playback start/pause/resync.
+            audio_renderer.pump();
         }
         surface.sync_video_frame(app.state.streaming())?;
 

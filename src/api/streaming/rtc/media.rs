@@ -1,5 +1,4 @@
 use crate::api::streaming::rtc::rtp;
-use crate::streaming::audio::AudioPacket;
 use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker};
 use anyhow::Result;
 use rtc::media_stream::MediaStreamTrackId;
@@ -173,7 +172,6 @@ impl VideoReceiver {
 pub(crate) struct AudioReceiver {
     track_id: Option<MediaStreamTrackId>,
     rtp: rtp::AudioRtp,
-    pub(crate) packets: Vec<AudioPacket>,
 }
 
 impl AudioReceiver {
@@ -181,7 +179,6 @@ impl AudioReceiver {
         Self {
             track_id: None,
             rtp: rtp::AudioRtp::new(sample_rate, payload_type),
-            packets: Vec::new(),
         }
     }
 
@@ -193,7 +190,9 @@ impl AudioReceiver {
         self.track_id.as_ref() == Some(track_id)
     }
 
+    /// Submits straight to the audio decode worker's inbox as the packet is received - see
+    /// `streaming::audio::submit_packet`.
     pub(crate) fn receive(&mut self, packet: Packet) {
-        self.rtp.receive(packet, &mut self.packets);
+        self.rtp.receive(packet);
     }
 }

@@ -1,5 +1,4 @@
 use crate::api::streaming::rtc::session::{RtcSession, RtcSessionConfig};
-use crate::streaming::audio::AudioPacket;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
 use anyhow::{Context, Result};
@@ -18,7 +17,6 @@ const PUMP_ERROR_SLEEP: Duration = Duration::from_millis(100);
 const GAMEPAD_PULSE_DURATION: Duration = Duration::from_millis(100);
 const MAX_PENDING_COMMANDS: usize = 16;
 const MAX_PENDING_EVENTS: usize = 32;
-const MAX_PENDING_AUDIO_BATCHES: usize = 16;
 const SDP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub(crate) trait RtcWorkerProvider: Send + 'static {
@@ -50,7 +48,6 @@ struct SampledGamepadFrame {
 pub struct RtcWorker {
     commands_tx: SyncSender<RtcWorkerCommand>,
     pub(crate) events_rx: Receiver<RtcWorkerEvent>,
-    pub(crate) audio_rx: Receiver<Vec<AudioPacket>>,
     pub(crate) latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
@@ -61,7 +58,6 @@ impl RtcWorker {
     pub(crate) fn spawn<P: RtcWorkerProvider>(provider: P) -> Result<Self> {
         let (commands_tx, commands_rx) = sync_channel(MAX_PENDING_COMMANDS);
         let (events_tx, events_rx) = sync_channel(MAX_PENDING_EVENTS);
-        let (audio_tx, audio_rx) = sync_channel(MAX_PENDING_AUDIO_BATCHES);
         let latest_frame = Arc::new(Mutex::new(None));
         let worker_latest_frame = Arc::clone(&latest_frame);
         let latest_gamepad = Arc::new(Mutex::new(None));
@@ -80,7 +76,6 @@ impl RtcWorker {
                         provider,
                         commands_rx,
                         events_tx.clone(),
-                        audio_tx,
                         worker_latest_frame,
                         worker_latest_gamepad,
                         worker_gamepad_pulses,
@@ -107,7 +102,6 @@ impl RtcWorker {
         Ok(Self {
             commands_tx,
             events_rx,
-            audio_rx,
             latest_frame,
             latest_gamepad,
             gamepad_pulses,
@@ -149,7 +143,6 @@ fn run_worker_thread<P: RtcWorkerProvider>(
     provider: P,
     commands_rx: Receiver<RtcWorkerCommand>,
     events_tx: SyncSender<RtcWorkerEvent>,
-    audio_tx: SyncSender<Vec<AudioPacket>>,
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
@@ -185,7 +178,6 @@ fn run_worker_thread<P: RtcWorkerProvider>(
             session,
             commands_rx,
             events_tx,
-            audio_tx,
             latest_frame,
             latest_gamepad,
             gamepad_pulses,
@@ -221,7 +213,6 @@ async fn run_session<B: super::session::RtcSessionBackend>(
     mut session: RtcSession<B>,
     commands_rx: Receiver<RtcWorkerCommand>,
     events_tx: SyncSender<RtcWorkerEvent>,
-    audio_tx: SyncSender<Vec<AudioPacket>>,
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
@@ -300,11 +291,6 @@ async fn run_session<B: super::session::RtcSessionBackend>(
                 &events_tx,
                 RtcWorkerEvent::LocalCandidates(local_candidates),
             );
-        }
-
-        let audio_packets = std::mem::take(&mut session.audio.packets);
-        if !audio_packets.is_empty() {
-            send_lossy(&audio_tx, audio_packets);
         }
 
         if let Some(frame) = session.video.latest_frame.take()

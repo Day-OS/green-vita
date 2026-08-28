@@ -3,7 +3,8 @@ use bytes::Bytes;
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use std::collections::VecDeque;
 use std::ptr::NonNull;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
 
 pub const AUDIO_SAMPLE_RATE: i32 = 48_000;
@@ -348,9 +349,38 @@ impl JitterBuffer {
     }
 }
 
+/// The live decode worker's inbox, published so the RTP-receiving thread can hand packets
+/// straight over the moment they arrive.
+///
+/// Audio used to reach the worker by riding along with the shell's render loop: RTP packets
+/// piled up in a `Vec` on the RTC thread, and the shell only drained it once per ~16 ms render
+/// frame. That hop was harmless with the old 80 ms jitter tolerance, but the jitter buffer's
+/// actual per-packet reordering window is much thinner than its 40 ms target suggests (see
+/// `JitterBuffer::next`), so the extra 16 ms was enough on its own to make a merely-late packet
+/// look lost by the time it reached the buffer. Publishing the sender here lets `submit_packet`
+/// be called directly from wherever a packet is received, with no render-frame hop in between.
+static WORKER_INBOX: Mutex<Option<SyncSender<AudioPacket>>> = Mutex::new(None);
+
+/// Hands one freshly-received RTP audio packet to the decode thread. Safe to call from any
+/// thread, and a no-op when no session is running.
+pub fn submit_packet(packet: AudioPacket) {
+    let Ok(inbox) = WORKER_INBOX.lock() else {
+        return;
+    };
+    let Some(sender) = inbox.as_ref() else {
+        return;
+    };
+    let _ = sender.try_send(packet);
+}
+
+fn publish_inbox(sender: Option<SyncSender<AudioPacket>>) {
+    if let Ok(mut inbox) = WORKER_INBOX.lock() {
+        *inbox = sender;
+    }
+}
+
 pub struct AudioRenderer {
     queue: AudioQueue<i16>,
-    packets_tx: SyncSender<AudioPacket>,
     samples_rx: Receiver<Vec<i16>>,
     started: bool,
     empty_since: Option<Instant>,
@@ -375,17 +405,22 @@ impl AudioRenderer {
             );
         }
         let (packets_tx, samples_rx) = spawn_decode_worker()?;
+        publish_inbox(Some(packets_tx));
 
         Ok(Self {
             queue,
-            packets_tx,
             samples_rx,
             started: false,
             empty_since: None,
         })
     }
 
-    pub fn submit_packets(&mut self, packets: Vec<AudioPacket>) {
+    /// Drains decoded PCM into the SDL queue and manages playback start/pause/resync. Audio
+    /// packets themselves no longer pass through here - they reach the decode worker directly
+    /// from the RTP-receiving thread via `submit_packet`. Call once per render frame; the
+    /// buffering thresholds here operate on a much coarser scale (tens of ms) than the
+    /// render-frame cadence, so polling this only that often is fine.
+    pub fn pump(&mut self) {
         if self.queue.size() == 0 {
             if self.started {
                 let since = *self.empty_since.get_or_insert_with(Instant::now);
@@ -396,17 +431,6 @@ impl AudioRenderer {
             }
         } else {
             self.empty_since = None;
-        }
-
-        for packet in packets {
-            match self.packets_tx.try_send(packet) {
-                Ok(()) | Err(TrySendError::Full(_)) => {}
-                Err(TrySendError::Disconnected(packet)) => {
-                    eprintln!("Audio decode worker stopped; restarting");
-                    self.restart_decode_worker();
-                    let _ = self.packets_tx.try_send(packet);
-                }
-            }
         }
 
         loop {
@@ -449,11 +473,20 @@ impl AudioRenderer {
         self.empty_since = None;
         match spawn_decode_worker() {
             Ok((packets_tx, samples_rx)) => {
-                self.packets_tx = packets_tx;
+                publish_inbox(Some(packets_tx));
                 self.samples_rx = samples_rx;
             }
-            Err(error) => eprintln!("Failed to restart audio decode worker: {error:#}"),
+            Err(error) => {
+                publish_inbox(None);
+                eprintln!("Failed to restart audio decode worker: {error:#}");
+            }
         }
+    }
+}
+
+impl Drop for AudioRenderer {
+    fn drop(&mut self) {
+        publish_inbox(None);
     }
 }
 

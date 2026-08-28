@@ -3,7 +3,6 @@ use crate::api::streaming::PlaybackBackendEvent;
 use crate::api::streaming::rtc::worker::{RtcWorker, RtcWorkerEvent};
 use crate::api_xbox::streaming::rtc::worker;
 use crate::jobs::{PollJob, poll_job};
-use crate::streaming::audio::AudioPacket;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::Result;
@@ -61,10 +60,6 @@ impl XboxStreamingBackend {
                 }
             }
         }
-    }
-
-    pub(crate) fn try_recv_audio_packets(&self) -> Option<Vec<AudioPacket>> {
-        self.worker.audio_rx.try_recv().ok()
     }
 
     pub(crate) fn take_latest_frame(&self) -> Option<(u64, DecodedFrame)> {
