@@ -14,8 +14,14 @@ const MAX_H264_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
 const VIDEO_RTP_CLOCK_RATE: u32 = 90_000;
 const LOW_FPS_DAMAGE_LIMIT: u8 = 8;
 const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
-const MIN_REORDER_GRACE: Duration = Duration::from_micros(2_000);
-const MAX_REORDER_GRACE: Duration = Duration::from_micros(12_000);
+/// Cut down from 2-12 ms after on-hardware testing showed real loss, not mere reordering,
+/// dominates on this network: the wait was neither rescuing packets often enough to earn its
+/// keep nor avoiding keyframe requests, while adding measurable input delay. Kept nonzero
+/// (rather than removing the hold path outright) only to still catch packets that are already
+/// sitting in the same batch of reads - anything genuinely late is back to being treated as lost
+/// almost immediately, close to the pre-reorder-hold behavior.
+const MIN_REORDER_GRACE: Duration = Duration::from_micros(100);
+const MAX_REORDER_GRACE: Duration = Duration::from_micros(1_000);
 
 pub(super) struct AudioRtp {
     payload_type: u8,
@@ -111,8 +117,9 @@ impl JitterEstimator {
     }
 }
 
-/// Twice the measured jitter, clamped to a sane range - long enough to ride out ordinary
-/// reordering, short enough that a genuine loss doesn't sit unresolved for long.
+/// Twice the measured jitter, clamped to a deliberately tiny range - see the comment on
+/// `MIN_REORDER_GRACE`/`MAX_REORDER_GRACE` for why this is no longer sized to ride out ordinary
+/// reordering.
 pub(super) fn reorder_grace_from_jitter(jitter_ms: f32) -> Duration {
     let twice_jitter = Duration::from_micros((jitter_ms.max(0.0) * 2.0 * 1000.0) as u64);
     twice_jitter.clamp(MIN_REORDER_GRACE, MAX_REORDER_GRACE)
@@ -363,7 +370,7 @@ impl VideoRtp {
                     arrival.checked_sub(self.reorder_hold_grace).unwrap_or(arrival);
                 self.expire_reorder_grace(sink, keyframe_requested, arrival, &mut stats);
             } else if let Some(ready) = self.parked_au.take() {
-                self.process_assembled(ready, sink, keyframe_requested, &mut stats);
+                self.process_assembled(ready, sink, keyframe_requested, &mut stats, false);
             }
         }
 
@@ -444,6 +451,7 @@ impl VideoRtp {
             sink,
             keyframe_requested,
             &mut stats,
+            false,
         );
         stats
     }
@@ -483,7 +491,12 @@ impl VideoRtp {
         self.reorder_hold_expected_sequence = None;
         self.depacketizer = H264Packet::default();
         if let Some(ready) = self.parked_au.take() {
-            self.process_assembled(ready, sink, keyframe_requested, stats);
+            // The drop just recorded above must not be immediately canceled out by the decrement
+            // a successfully-parked frame would otherwise earn - see `process_assembled`'s
+            // `just_damaged` parameter. Without this, sustained real loss (each drop paired with
+            // its already-assembled successor flushing right behind it) never accumulates enough
+            // damage to trigger a full keyframe wait, since every +1 is immediately undone by a -1.
+            self.process_assembled(ready, sink, keyframe_requested, stats, true);
         }
     }
 
@@ -523,18 +536,24 @@ impl VideoRtp {
             sink,
             keyframe_requested,
             stats,
+            false,
         );
         if let Some(ready) = self.parked_au.take() {
-            self.process_assembled(ready, sink, keyframe_requested, stats);
+            self.process_assembled(ready, sink, keyframe_requested, stats, false);
         }
     }
 
+    /// `just_damaged` is true only when this frame is being flushed immediately after
+    /// `record_damage` was called for a drop in the very same event (see `expire_reorder_grace`):
+    /// without it, that drop's increment would be undone by this call's own decrement before
+    /// `damage_score` could ever accumulate across repeated real loss.
     fn process_assembled<S: VideoAuSink>(
         &mut self,
         assembled: AssembledVideoFrame,
         sink: &S,
         keyframe_requested: &mut bool,
         stats: &mut VideoSampleStats,
+        just_damaged: bool,
     ) {
         let AssembledVideoFrame {
             data,
@@ -607,7 +626,7 @@ impl VideoRtp {
             }
             self.waiting_for_keyframe = false;
             self.damage_score = 0;
-        } else {
+        } else if !just_damaged {
             self.damage_score = self.damage_score.saturating_sub(1);
         }
 
@@ -751,10 +770,10 @@ mod tests {
     }
 
     #[test]
-    fn reorder_grace_clamps_to_2_12_ms() {
+    fn reorder_grace_clamps_to_a_tiny_range() {
         assert_eq!(reorder_grace_from_jitter(0.0), MIN_REORDER_GRACE);
-        assert_eq!(reorder_grace_from_jitter(0.5), MIN_REORDER_GRACE);
-        assert_eq!(reorder_grace_from_jitter(3.0), Duration::from_micros(6_000));
+        assert_eq!(reorder_grace_from_jitter(0.02), MIN_REORDER_GRACE);
+        assert_eq!(reorder_grace_from_jitter(0.2), Duration::from_micros(400));
         assert_eq!(reorder_grace_from_jitter(100.0), MAX_REORDER_GRACE);
     }
 

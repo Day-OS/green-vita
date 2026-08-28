@@ -30,6 +30,22 @@ vitasdk-sys = { version = "0.3", features = ["SceAppUtil_stub", "SceKernelDmacMg
 ring = { git = "https://github.com/vita-rust/ring.git", branch = "v0.17.14-vita" }
 rtc-shared = { git = "https://github.com/Day-OS/rtc.git", branch = "vita" }
 
+[profile.release]
+# vitasdk's `vita-elf-create` computes a fixed-size SCE metadata block (module info + NID
+# import/export tables) and needs room to place it right after the RX (text/rodata) segment ends.
+# That gap comes from rounding the segment's end up to the toolchain's page-alignment quantum, so
+# it doesn't shrink smoothly as the binary grows - it can suddenly go from "plenty of room" to
+# "zero room" when a change pushes the segment size just past a rounding boundary, independent of
+# how much the binary actually grew. At default settings this project's current size does exactly
+# that ("Cannot allocate 3916 bytes for SCE data at end of segment 0; segment 1 overlaps"); this
+# isn't tunable from RUSTFLAGS - `-z common-page-size`/`max-page-size`/`--no-rosegment` linker
+# flags didn't change the deficit at all. Full LTO plus a single codegen unit gives the compiler
+# whole-program visibility for dead-code elimination and cross-crate inlining, which shrinks the
+# binary enough to clear the boundary without giving up opt-level 3.
+opt-level = 3
+lto = true
+codegen-units = 1
+
 [package.metadata.vita]
 title_id = "GREENVITA"
 title_name = "GreenVita"

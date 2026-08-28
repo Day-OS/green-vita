@@ -84,10 +84,19 @@ pub struct HwVideoDecoder {
     _library: AvcdecLibrary,
     width: u32,
     height: u32,
+    next_au_seq: u64,
+    pending_au: Option<Vec<u8>>,
 }
 
 impl HwVideoDecoder {
-    pub fn new(config: DecoderConfig) -> Result<Self> {
+    /// `force_public` is reserved for when the internal submit/poll AVCDEC path
+    /// (`sceAvcdecDecodeAuInternal`/`sceAvcdecDecodeGetPictureWithWorkPictureInternal`) is added
+    /// back: this decoder only ever speaks the public, single-call `sceAvcdecDecode` today, so
+    /// the flag has no effect here yet. It's threaded through now so the worker's stuck-decoder
+    /// safety net (see `worker::run_decode_loop`) already has the right call shape in place - a
+    /// later change only needs to make this constructor act on the flag, not re-plumb every
+    /// caller.
+    pub fn new(config: DecoderConfig, _force_public: bool) -> Result<Self> {
         unsafe {
             let library = AvcdecLibrary::initialize(config.decode_width, config.decode_height)?;
 
@@ -128,16 +137,37 @@ impl HwVideoDecoder {
                 _library: library,
                 width: config.output_width,
                 height: config.output_height,
+                next_au_seq: 0,
+                pending_au: None,
             })
         }
     }
 
-    /// Decodes one Access Unit. Returns `false` if the hardware buffered it without producing a picture yet.
-    pub fn decode(
-        &mut self,
-        access_unit: &[u8],
-        direct_target: VideoTextureTarget,
-    ) -> Result<bool> {
+    pub fn submitted_sequence(&self) -> u64 {
+        self.next_au_seq
+    }
+
+    /// Queues one access unit. The public `sceAvcdecDecode` API bundles submit and picture-fetch
+    /// into a single blocking call, so the actual hardware work happens in `get_picture` instead
+    /// - this just buffers the bytes and hands out a sequence number, matching the call shape the
+    /// eventual internal submit/poll API will need here. That does mean an extra copy of the
+    /// access unit that today's single-call design didn't need; it goes away once `get_picture`
+    /// polls real hardware state instead of bytes buffered on this side.
+    pub fn submit_access_unit(&mut self, access_unit: &[u8]) -> Result<()> {
+        self.next_au_seq = self.next_au_seq.saturating_add(1);
+        self.pending_au = Some(access_unit.to_vec());
+        Ok(())
+    }
+
+    /// Runs the hardware decode call for the most recently submitted access unit and returns its
+    /// sequence number on success. `Ok(None)` means nothing is queued - today that only happens
+    /// if this is polled again before the next `submit_access_unit`, since the public API always
+    /// completes on the very first poll after a submit.
+    pub fn get_picture(&mut self, direct_target: VideoTextureTarget) -> Result<Option<u64>> {
+        let Some(access_unit) = self.pending_au.take() else {
+            return Ok(None);
+        };
+
         unsafe {
             let au = SceAvcdecAu {
                 pts: SceVideodecTimeStamp {
@@ -200,7 +230,7 @@ impl HwVideoDecoder {
                 bail!("sceAvcdecDecode failed: {ret:#x}");
             }
             if array_picture.numOfOutput == 0 {
-                return Ok(false);
+                return Ok(None);
             }
 
             // `framePitch` is in pixels. Validate the complete byte size before trusting the
@@ -221,7 +251,7 @@ impl HwVideoDecoder {
                     output_capacity
                 );
             }
-            Ok(true)
+            Ok(Some(self.next_au_seq))
         }
     }
 }
