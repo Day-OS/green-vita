@@ -1,9 +1,9 @@
 use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver};
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
-use rtc::peer_connection::RTCPeerConnection;
 use rtc::peer_connection::event::{RTCDataChannelEvent, RTCPeerConnectionEvent, RTCTrackEvent};
 use rtc::peer_connection::message::RTCMessage;
 use rtc::peer_connection::sdp::RTCSessionDescription;
@@ -121,12 +121,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         self.video.drain_decoder(&mut keyframe_requested);
 
         let now = Instant::now();
-        // A reorder hold's grace period has to expire even when no further packet ever arrives to
-        // trigger it, so this is checked on every tick rather than only alongside
-        // `handle_peer_messages` - but only when a hold is actually outstanding.
-        if self.video.reorder_deadline().is_some_and(|deadline| now >= deadline) {
-            self.video.expire_reorder_grace_if_due(&mut keyframe_requested, now);
-        }
         // rtc-rs is sans-I/O, so its expired internal timer must be advanced by our pump.
         if let Some(deadline) = self.peer.poll_timeout()
             && now >= deadline
@@ -230,7 +224,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             match message {
                 RTCMessage::RtpPacket(track_id, packet) => {
                     if self.video.handles(&track_id) {
-                        self.video.receive(packet, &mut keyframe_requested, Instant::now());
+                        self.video.receive(packet, &mut keyframe_requested);
                     } else if self.audio.handles(&track_id) {
                         self.audio.receive(packet);
                     }

@@ -13,10 +13,6 @@ pub(crate) struct VideoMetrics {
     pub(crate) queue_full: AtomicU64,
     pub(crate) resyncs: AtomicU64,
     pub(crate) resets: AtomicU64,
-    /// How many times the picture-poll loop gave up on a stuck decoder (see
-    /// `STUCK_DECODER_POLL_THRESHOLD`) and forced the public decode path for the rest of the
-    /// session.
-    pub(crate) stuck_resets: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -32,7 +28,6 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     queue_full: AtomicU64::new(0),
     resyncs: AtomicU64::new(0),
     resets: AtomicU64::new(0),
-    stuck_resets: AtomicU64::new(0),
 };
 
 pub fn video_performance_summary() -> String {
@@ -41,7 +36,7 @@ pub fn video_performance_summary() -> String {
     let rtp_average = rtp_sum.checked_div(rtp_count).unwrap_or(0);
     let rtp_max = METRICS.rtp_assembly_max_us.swap(0, Ordering::Relaxed);
     format!(
-        "fps d/p:{}/{} us r:{rtp_average}/{rtp_max} d/a:{}/{} skip:{} repl:{} q:{} rs:{} rst:{} stuck:{}",
+        "fps d/p:{}/{} us r:{rtp_average}/{rtp_max} d/a:{}/{} skip:{} repl:{} q:{} rs:{} rst:{}",
         METRICS.decoded.swap(0, Ordering::Relaxed),
         METRICS.presented.swap(0, Ordering::Relaxed),
         METRICS.decode_us.load(Ordering::Relaxed),
@@ -51,6 +46,5 @@ pub fn video_performance_summary() -> String {
         METRICS.queue_full.swap(0, Ordering::Relaxed),
         METRICS.resyncs.load(Ordering::Relaxed),
         METRICS.resets.load(Ordering::Relaxed),
-        METRICS.stuck_resets.load(Ordering::Relaxed),
     )
 }

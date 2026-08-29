@@ -1,9 +1,8 @@
 use rtc::data_channel::RTCDataChannelId;
-use rtc::peer_connection::RTCPeerConnection;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::api::streaming::rtc::peer::RtcDataChannelConfig;
+use crate::api::streaming::rtc::peer::{RTCPeerConnection, RtcDataChannelConfig};
 use crate::api_xbox::streaming::rtc::protocol::ChannelIds;
 use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH};
 
@@ -135,6 +134,17 @@ pub fn generate_message(path: &str, data: Value) -> Value {
 pub fn startup_messages() -> Vec<Value> {
     let width = STREAM_WIDTH;
     let height = STREAM_HEIGHT;
+    // Tried raising this to 4000 (OpenNOW-vita's floor for this hardware/network class) as a
+    // first test, but on hardware it made blockiness worse, not better, at the same 1280x720
+    // resolution - consistent with what the reorder-hold tuning already told us: on this
+    // network, real packet loss dominates over mere reordering. A higher announced ceiling just
+    // gives the encoder license to push bigger/more frequent packets onto a link that's already
+    // dropping some, and lost packets are what surface as macroblock corruption. Back to 2000
+    // until there's a way to compute this from measured throughput instead of guessing a fixed
+    // value (see OpenNOW-vita's `link_estimate.rs` for that approach - xCloud's handshake here
+    // doesn't obviously expose a way to revise it mid-session the way NVST's SDP re-negotiation
+    // does, so that would need its own investigation).
+    let max_bitrate_kbps = 2000;
 
     vec![
         generate_message(
@@ -165,13 +175,13 @@ pub fn startup_messages() -> Vec<Value> {
                 "supportsFps": 30,
                 "maxWidth": width,
                 "maxHeight": height,
-                "maxBitrateKbps": 2000,
+                "maxBitrateKbps": max_bitrate_kbps,
                 "video": {
                     "width": width,
                     "height": height,
                     "maxWidth": width,
                     "maxHeight": height,
-                    "maxBitrateKbps": 2000,
+                    "maxBitrateKbps": max_bitrate_kbps,
                 },
             }),
         ),

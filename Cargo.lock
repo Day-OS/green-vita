@@ -843,6 +843,7 @@ dependencies = [
  "reqwest",
  "ring",
  "rtc",
+ "rtc-interceptor",
  "rtc-media",
  "rtc-rtcp",
  "sdl2",

@@ -1,10 +1,10 @@
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::session::RtcSessionBackend;
 use crate::api_xbox::streaming::control::channel::{self, HandshakeStage};
 use crate::api_xbox::streaming::control::input::{InputQueue, PointerFrame};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use bytes::BytesMut;
 use rtc::data_channel::RTCDataChannelId;
-use rtc::peer_connection::RTCPeerConnection;
 
 #[derive(Clone, Copy)]
 pub(in crate::api_xbox::streaming) struct ChannelIds {

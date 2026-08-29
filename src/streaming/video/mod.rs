@@ -3,6 +3,21 @@ mod memory;
 pub(crate) mod metrics;
 mod worker;
 
+// Back to the known-working 1280x720. Two custom-resolution experiments below native have failed
+// for two different reasons, so don't retry either without new information:
+//   - 960x540: sceVideodecInitLibrary rejected it outright with SCE_VIDEODEC_ERROR_INVALID_PARAM
+//     (0x80620802). The Vita's hardware H.264 decoder requires coded dimensions to be whole
+//     16x16 macroblocks; 540/16 = 33.75 is not an integer, so this is a hard local constraint,
+//     unrelated to what Xbox Cloud Gaming does or doesn't honor. Any future resolution attempt
+//     MUST have both width and height evenly divisible by 16.
+//   - 960x544 (960/16=60, 544/16=34 - both exact, so it doesn't hit the constraint above):
+//     decoder init succeeded, but produced a black screen with audio still working - a silent
+//     decode failure (no error, numOfOutput presumably never leaving 0), not a hardware rejection.
+//     That points at Xbox Cloud Gaming not actually encoding at the requested custom resolution,
+//     but this was never confirmed - the on-screen `srv:WxH` stats readout (parse_server_video_size)
+//     would show what the server actually reports sending, and wasn't checked before reverting.
+// Do not guess another resolution value without checking that readout first - it's the one piece
+// of evidence that would tell us definitively whether the server is honoring the request at all.
 pub const STREAM_WIDTH: u32 = 1280;
 pub const STREAM_HEIGHT: u32 = 720;
 pub const HW_OUTPUT_WIDTH: u32 = 960;

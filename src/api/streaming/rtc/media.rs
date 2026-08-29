@@ -1,8 +1,8 @@
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::rtp;
 use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker};
 use anyhow::Result;
 use rtc::media_stream::MediaStreamTrackId;
-use rtc::peer_connection::RTCPeerConnection;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::sync::Arc;
@@ -65,28 +65,9 @@ impl VideoReceiver {
         self.track_id.as_ref() == Some(track_id)
     }
 
-    pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool, arrival: Instant) {
+    pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
         self.received_packet = true;
-        let sample_stats = self.rtp.receive(&self.decoder, packet, keyframe_requested, arrival);
-        self.fold_sample_stats(sample_stats);
-    }
-
-    /// When a reorder hold's grace period will next expire, if one is active - so the caller can
-    /// avoid checking in on every pump tick when there is nothing outstanding.
-    pub(crate) fn reorder_deadline(&self) -> Option<Instant> {
-        self.rtp.reorder_deadline()
-    }
-
-    /// Called once the deadline from `reorder_deadline` has passed, since it has to expire even
-    /// if no further packet ever arrives to trigger it.
-    pub(crate) fn expire_reorder_grace_if_due(&mut self, keyframe_requested: &mut bool, now: Instant) {
-        let sample_stats = self
-            .rtp
-            .expire_reorder_grace_if_due(&self.decoder, keyframe_requested, now);
-        self.fold_sample_stats(sample_stats);
-    }
-
-    fn fold_sample_stats(&mut self, sample_stats: rtp::VideoSampleStats) {
+        let sample_stats = self.rtp.receive(&self.decoder, packet, keyframe_requested);
         self.stats.dropped = self
             .stats
             .dropped
@@ -160,11 +141,10 @@ impl VideoReceiver {
             .map(|(width, height)| format!("{width}x{height}"))
             .unwrap_or_else(|| "?".to_owned());
         Some(format!(
-            "enc:{encoded_resolution} srcfps:{source_fps} {performance} wait:{} drop:{} err:{} jit:{:.1}ms",
+            "enc:{encoded_resolution} srcfps:{source_fps} {performance} wait:{} drop:{} err:{}",
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.dropped,
             self.stats.decode_errors,
-            self.rtp.current_jitter_ms(),
         ))
     }
 }

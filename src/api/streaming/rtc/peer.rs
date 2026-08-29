@@ -1,12 +1,31 @@
 use anyhow::{Context, Result};
+use interceptor::{NackGeneratorBuilder, NackGeneratorInterceptor, NoopInterceptor, Registry};
 use rtc::data_channel::{RTCDataChannelId, RTCDataChannelInit};
 use rtc::peer_connection::configuration::RTCConfigurationBuilder;
 use rtc::peer_connection::configuration::media_engine::MediaEngine;
 use rtc::peer_connection::configuration::setting_engine::SettingEngine;
 use rtc::peer_connection::transport::RTCIceServer;
-use rtc::peer_connection::{RTCPeerConnection, RTCPeerConnectionBuilder};
+use rtc::peer_connection::RTCPeerConnectionBuilder;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::time::Duration;
+
+/// The video/audio codecs are already registered with `nack`/`nack pli` in their RTCP feedback
+/// (see `register_vita_codecs`), which only advertises the capability in SDP - it doesn't make
+/// this client act on it. This is the interceptor that actually does: it watches incoming video
+/// RTP for gaps in the sequence numbers and sends a NACK asking Xbox Cloud Gaming's server to
+/// retransmit just the missing packet, instead of the only recovery this client had before,
+/// waiting for `damage_score` to cross its threshold and requesting an entire new keyframe.
+/// There's no responder half of the pair (which would retransmit our own outgoing RTP if the
+/// remote NACKed it) because this client never sends RTP media, only receives it - nothing we
+/// send is NACK-able.
+///
+/// The concrete type has to be spelled out because `Interceptor` requires `Sized` - it isn't
+/// object-safe, so it can't be erased behind `Box<dyn Interceptor>`. Every other module that
+/// touches a peer connection imports the `RTCPeerConnection` alias below instead of the crate's
+/// bare (and now mismatched) `rtc::peer_connection::RTCPeerConnection`.
+type VitaInterceptor = NackGeneratorInterceptor<NoopInterceptor>;
+
+pub(crate) type RTCPeerConnection = rtc::peer_connection::RTCPeerConnection<VitaInterceptor>;
 
 pub(crate) struct RtcDataChannelConfig {
     pub label: &'static str,
@@ -28,11 +47,13 @@ pub(crate) fn create(
         .build();
     let mut setting_engine = SettingEngine::default();
     setting_engine.set_ice_connection_attempts(Some(Duration::from_millis(200)), Some(75));
+    let interceptors = Registry::new().with(NackGeneratorBuilder::new().build());
 
     let mut peer = RTCPeerConnectionBuilder::new()
         .with_configuration(configuration)
         .with_setting_engine(setting_engine)
         .with_media_engine(media_engine)
+        .with_interceptor_registry(interceptors)
         .build()
         .context("failed to create rtc peer connection")?;
 

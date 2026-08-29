@@ -4,9 +4,9 @@ use crate::api_xbox::streaming::control::channel::{
 };
 use crate::api_xbox::streaming::rtc::AUDIO_PAYLOAD_TYPE;
 use crate::api_xbox::streaming::rtc::STUN_SERVER;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api_xbox::streaming::rtc::protocol::{ChannelIds, XboxRtcProtocol};
 use anyhow::{Context, Result};
-use rtc::peer_connection::RTCPeerConnection;
 use rtc::peer_connection::configuration::media_engine::{
     MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine,
 };
