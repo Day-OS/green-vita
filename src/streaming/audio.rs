@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use std::ptr::NonNull;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 
 pub const AUDIO_SAMPLE_RATE: i32 = 48_000;

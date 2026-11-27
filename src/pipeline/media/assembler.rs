@@ -129,14 +129,14 @@ pub struct AccessUnitAssembler {
     /// Grace v2 (2026-11-02): ONE parked AU. A holed, NACK-reported,
     /// marker-seen AU that a resolve path (rule-2 boundary or newer-ts
     /// force-out — the two doors real traffic damage actually takes) would
-    /// damage instead parks here for GRACE_BUDGET_US so S5 RTX can land.
+    /// damage instead parks here for the repair window so S5 RTX can land.
     /// Tuple = (parked AU, deadline µs, expected_first_seq): the AU's true
     /// first seq (prev close + 1) — leading-loss AUs present a span that
     /// STARTS after their true first seq, so RTX span checks must run
     /// against this, not the parked payloads' own first seq. Output ORDER:
     /// while parked, the queue must not drain (poll/push tails gate on
     /// this) — the parked AU's outcome resolves to the queue FRONT, so
-    /// newer frames queue behind it (bounded HOL ≤ GRACE_BUDGET_US on
+    /// newer frames queue behind it (bounded HOL ≤ the repair window on
     /// damaged moments only; zero cost on clean frames).
     grace_parked: Option<(AuBuilder, u64, u16)>,
 }
@@ -230,6 +230,7 @@ impl AccessUnitAssembler {
                     if self.grace_enabled
                         && self.grace_parked.is_none()
                         && (Self::grace_eligible(&au) || markerless_tail)
+                        && repair_policy().base_us > 0
                     {
                         let expected_first = seq_bounds(&au.payloads).0;
                         let mut au = au;
@@ -241,7 +242,11 @@ impl AccessUnitAssembler {
                             }
                         }
                         self.grace_parked =
-                            Some((au, arrival_us.saturating_add(GRACE_BUDGET_US), expected_first));
+                            Some((
+                                au,
+                                arrival_us.saturating_add(repair_policy().base_us),
+                                expected_first,
+                            ));
                         METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
                         // Micro-jb event: parked AU = burst signature.
                         MICRO_JB_EVENTS.fetch_add(1, Ordering::Relaxed);
@@ -585,13 +590,22 @@ impl AccessUnitAssembler {
             Some(au) => (compute_holes(&au.payloads), au.nack_reported),
             None => return None,
         };
-        if holes > 0 && nack_reported && self.grace_enabled && self.grace_parked.is_none() {
+        if holes > 0
+            && nack_reported
+            && self.grace_enabled
+            && self.grace_parked.is_none()
+            && repair_policy().base_us > 0
+        {
             let expected_first = {
                 let au = self.current_au.as_ref().expect("AU present at rule-2 boundary");
                 seq_bounds(&au.payloads).0
             };
             let au = self.current_au.take().expect("AU present at rule-2 boundary");
-            self.grace_parked = Some((au, now_us.saturating_add(GRACE_BUDGET_US), expected_first));
+            self.grace_parked = Some((
+                au,
+                now_us.saturating_add(repair_policy().base_us),
+                expected_first,
+            ));
             METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
             // Micro-jb event: a parked AU is a burst signature — the decode
             // bank may grow (bounded) to absorb the next burst invisibly.
@@ -624,7 +638,7 @@ impl AccessUnitAssembler {
     /// landed start packet upgrades `had_first_slice` (try_fill v2.1) and
     /// completes the frame.
     fn grace_leading_loss_park(&mut self, arrival_us: u64) -> bool {
-        if !self.grace_enabled || self.grace_parked.is_some() {
+        if !self.grace_enabled || self.grace_parked.is_some() || repair_policy().base_us == 0 {
             return false;
         }
         let expect = self.prev_close_before_current.wrapping_add(1);
@@ -647,7 +661,7 @@ impl AccessUnitAssembler {
         let mut au = self.current_au.take().expect("AU present for leading park");
         au.nack_reported = true;
         self.pending_nacks.push((expect, first_seq.wrapping_sub(1)));
-        self.grace_parked = Some((au, arrival_us.saturating_add(GRACE_BUDGET_US), expect));
+        self.grace_parked = Some((au, arrival_us.saturating_add(repair_policy().base_us), expect));
         METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
         // Micro-jb event: parked AU = burst signature.
         MICRO_JB_EVENTS.fetch_add(1, Ordering::Relaxed);
@@ -821,9 +835,44 @@ const ANNEXB_START_CODE: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
 /// holes (A19 reorder window).
 const MARKER_FILL_WINDOW_US: u64 = 12_000;
 
-// Grace hold budget in µs: ≈ one radio tail (TWCC median tail 36–39 ms) —
-// gives S5 RTX repair time to land before the damaged resolve fallback.
-const GRACE_BUDGET_US: u64 = 40_000;
+// Grace hold budget (µs) now comes from the runtime preset below; the
+// Balanced default keeps the original 40_000 (≈ one radio tail: TWCC median
+// tail 36–39 ms) so S5 RTX repair has time to land before the Damaged
+// resolve fallback.
+pub(crate) static REPAIR_WINDOW_POLICY: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(2);
+
+// Runtime repair-window preset (settings: RepairWindow): 0 Off, 1 Short,
+// 2 Balanced, 3 Patient — written at stream start, read at damage time.
+// The preset only sets the park budget today; early expiry on backlog,
+// a one-shot extension and a half-window NACK refresh are future work.
+pub(crate) struct RepairPolicy {
+    pub(crate) base_us: u64,
+}
+
+pub(crate) fn repair_policy() -> RepairPolicy {
+    let base_us = match REPAIR_WINDOW_POLICY.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => 0,
+        1 => 17_000,
+        3 => 60_000,
+        // Stage 6 (2026-11-26): RTT-aware Balanced window. The only RTT signal
+        // this fork has is the netprobe value (`probe_rtt_ms_x10`, stored at
+        // stream start) -- TWCC is send-only and SRTCP is encrypted, so there
+        // is no per-packet RTT. `clamp(RTT + 20 ms, 40 ms, 100 ms)`: the 40 ms
+        // floor keeps the measured radio tail (TWCC median 36-39 ms) covered
+        // when RTT is small, and the 100 ms cap stops a bad probe from parking
+        // an AU long enough to become visible latency. Presets Off/Short/
+        // Patient stay fixed; only the Balanced default is RTT-scaled.
+        _ => {
+            let rtt_ms = METRICS.probe_rtt_ms_x10.load(std::sync::atomic::Ordering::Relaxed) / 10;
+            rtt_ms
+                .saturating_mul(1000)
+                .saturating_add(20_000)
+                .clamp(40_000, 100_000)
+        }
+    };
+    RepairPolicy { base_us }
+}
 
 /// AU size cap — matches legacy `MAX_H264_ACCESS_UNIT_BYTES` in rtp.rs.
 const MAX_AU_BYTES: usize = 2 * 1024 * 1024;

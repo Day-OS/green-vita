@@ -63,8 +63,6 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) sr_clock_offset_ms: i64,
     pub(crate) capture_to_arrival_us: i64,
     pub(crate) capture_to_arrival_max_us: i64,
-    pub(crate) sr_anchor_ntp: u64,
-    pub(crate) sr_anchor_rtp_ts: u64,
     pub(crate) sr_anchor_local_us: u64,
     pub(crate) sr_anchor_local_wall_us: u64,
     pub(crate) sh_match: u64,
@@ -107,6 +105,32 @@ pub(crate) struct MetricsSnapshot {
     // PLI→IDR latency metrics (Task D): last-value and max-over-session.
     pub(crate) pli_idr_ms_last: u64,
     pub(crate) pli_idr_ms_max: u64,
+    // Perf-plan stage 0 probes (2026-11-24): UI loop period and work time,
+    // RX datagrams drained per wake (max), RTC-thread CPU in handle_read,
+    // IDR bytes submitted, keyframe requests actually sent.
+    pub(crate) ui_loop_us: u64,
+    pub(crate) ui_work_us: u64,
+    pub(crate) rx_drain_max: u64,
+    pub(crate) rtc_cpu_us: u64,
+    pub(crate) idr_bytes: u64,
+    pub(crate) kf_req: u64,
+    // Session constants (perf plan 2026-11-24), written once at stream start:
+    // clocks the app runs at while streaming, and the kernel's default UDP
+    // receive buffer. 0 = unknown / not read.
+    pub(crate) clk_arm_mhz: u64,
+    pub(crate) clk_bus_mhz: u64,
+    pub(crate) clk_gpu_mhz: u64,
+    pub(crate) clk_xbar_mhz: u64,
+    pub(crate) rcvbuf_def_bytes: u64,
+    // Pause probes (perf plan 2026-11-25), per-second maxima in microseconds:
+    // longest interval between two polls of the socket by the receive thread,
+    // longest interval between two RTC pump passes, and the longest single pump.
+    pub(crate) rx_gap_max_us: u64,
+    pub(crate) rtc_gap_max_us: u64,
+    pub(crate) rtc_pump_max_us: u64,
+    // Perf-plan stage 3: access units decoded into a scratch texture and
+    // retired before display (a newer access unit was queued behind them).
+    pub(crate) au_scratch: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -129,8 +153,6 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtx_crate_seen: AtomicU64,
     // Absolute latency metrics (Task D)
     // SR anchor timestamps and per-second derived metrics
-    pub(crate) sr_anchor_ntp: AtomicU64,          // NTP timestamp from SR (ms since 1900)
-    pub(crate) sr_anchor_rtp_ts: AtomicU64,       // RTP timestamp from SR
     pub(crate) sr_anchor_local_us: AtomicU64,     // Local monotonic time when SR arrived (us since boot)
     pub(crate) sr_anchor_local_wall_us: AtomicU64, // Client wall clock at SR arrival (us since UNIX epoch)
 
@@ -216,6 +238,25 @@ pub(crate) struct VideoMetrics {
     pub(crate) pli_idr_ms_max: AtomicU64,
     /// Damaged AUs shed-to-IDR under the Quality/Balanced damage policies.
     pub(crate) damaged_dropped: AtomicU64,
+    // Perf-plan stage 0 probes (2026-11-24).
+    pub(crate) ui_loop_us: AtomicU64,
+    pub(crate) ui_work_us: AtomicU64,
+    pub(crate) rx_drain_max: AtomicU64,
+    pub(crate) rtc_cpu_us: AtomicU64,
+    pub(crate) idr_bytes: AtomicU64,
+    pub(crate) kf_req: AtomicU64,
+    // Session constants (perf plan 2026-11-24); see MetricsSnapshot.
+    pub(crate) clk_arm_mhz: AtomicU64,
+    pub(crate) clk_bus_mhz: AtomicU64,
+    pub(crate) clk_gpu_mhz: AtomicU64,
+    pub(crate) clk_xbar_mhz: AtomicU64,
+    pub(crate) rcvbuf_def_bytes: AtomicU64,
+    // Pause probes (perf plan 2026-11-25); see MetricsSnapshot.
+    pub(crate) rx_gap_max_us: AtomicU64,
+    pub(crate) rtc_gap_max_us: AtomicU64,
+    pub(crate) rtc_pump_max_us: AtomicU64,
+    // Perf-plan stage 3; see MetricsSnapshot.
+    pub(crate) au_scratch: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -270,8 +311,6 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     video_metadata_sent: AtomicU64::new(0),
     video_bandwidth_kbps: AtomicU64::new(0),
     // Absolute latency metrics (Task D) - SR anchor and per-second derived metrics
-    sr_anchor_ntp: AtomicU64::new(0),
-    sr_anchor_rtp_ts: AtomicU64::new(0),
     sr_anchor_local_us: AtomicU64::new(0),
     sr_anchor_local_wall_us: AtomicU64::new(0),
     sr_age_ms: AtomicI64::new(0),
@@ -315,6 +354,21 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     pli_idr_ms_max: AtomicU64::new(0),
     damaged_dropped: AtomicU64::new(0),
     rtcp_rtpfb_any: AtomicU64::new(0),
+    ui_loop_us: AtomicU64::new(0),
+    ui_work_us: AtomicU64::new(0),
+    rx_drain_max: AtomicU64::new(0),
+    rtc_cpu_us: AtomicU64::new(0),
+    idr_bytes: AtomicU64::new(0),
+    kf_req: AtomicU64::new(0),
+    clk_arm_mhz: AtomicU64::new(0),
+    clk_bus_mhz: AtomicU64::new(0),
+    clk_gpu_mhz: AtomicU64::new(0),
+    clk_xbar_mhz: AtomicU64::new(0),
+    rcvbuf_def_bytes: AtomicU64::new(0),
+    rx_gap_max_us: AtomicU64::new(0),
+    rtc_gap_max_us: AtomicU64::new(0),
+    rtc_pump_max_us: AtomicU64::new(0),
+    au_scratch: AtomicU64::new(0),
 };
 
 
@@ -370,7 +424,7 @@ pub fn video_performance_summary() -> String {
         METRICS.sr_clock_offset_ms.load(Ordering::Relaxed),
     );
     let line2 = format!(
-        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{}",
+        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{} rxd:{} rcpu:{} ui:{} uw:{} kf:{} idr:{} scr:{}",
         METRICS.resyncs.load(Ordering::Relaxed),
         METRICS.resets.load(Ordering::Relaxed),
         METRICS.rtp_wait_drops.load(Ordering::Relaxed),
@@ -388,6 +442,13 @@ pub fn video_performance_summary() -> String {
         METRICS.video_metadata_sent.load(Ordering::Relaxed),
         METRICS.display_pickup_us.load(Ordering::Relaxed),
         METRICS.display_pickup_max_us.load(Ordering::Relaxed),
+        METRICS.rx_drain_max.load(Ordering::Relaxed),
+        METRICS.rtc_cpu_us.load(Ordering::Relaxed) / 1000,
+        METRICS.ui_loop_us.load(Ordering::Relaxed) / 1000,
+        METRICS.ui_work_us.load(Ordering::Relaxed) / 1000,
+        METRICS.kf_req.load(Ordering::Relaxed),
+        METRICS.idr_bytes.load(Ordering::Relaxed) / 1024,
+        METRICS.au_scratch.load(Ordering::Relaxed),
     );
     // HUD vt segment: vt_max_0..5 and vt_exit_count
     let vt_segment = format!(
@@ -479,10 +540,8 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         sr_clock_offset_ms: METRICS.sr_clock_offset_ms.swap(0, Ordering::Relaxed) as i64,
         capture_to_arrival_us: METRICS.capture_to_arrival_us.swap(0, Ordering::Relaxed) as i64,
         capture_to_arrival_max_us: METRICS.capture_to_arrival_max_us.swap(0, Ordering::Relaxed) as i64,
-        sr_anchor_ntp: METRICS.sr_anchor_ntp.load(Ordering::Relaxed) as u64,
-        sr_anchor_rtp_ts: METRICS.sr_anchor_rtp_ts.load(Ordering::Relaxed) as u64,
-        sr_anchor_local_us: METRICS.sr_anchor_local_us.load(Ordering::Relaxed) as u64,
-        sr_anchor_local_wall_us: METRICS.sr_anchor_local_wall_us.load(Ordering::Relaxed) as u64,
+        sr_anchor_local_us: METRICS.sr_anchor_local_us.load(Ordering::Relaxed),
+        sr_anchor_local_wall_us: METRICS.sr_anchor_local_wall_us.load(Ordering::Relaxed),
         sh_match: METRICS.sh_match.swap(0, Ordering::Relaxed),
         sh_bound_mismatch: METRICS.sh_bound_mismatch.swap(0, Ordering::Relaxed),
         sh_bytes_mismatch: METRICS.sh_bytes_mismatch.swap(0, Ordering::Relaxed),
@@ -511,6 +570,23 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         pli_idr_ms_max: METRICS.pli_idr_ms_max.load(Ordering::Relaxed),
         rtp_ext_twcc: METRICS.rtp_ext_twcc.swap(0, Ordering::Relaxed),
         rtcp_rtpfb_any: METRICS.rtcp_rtpfb_any.swap(0, Ordering::Relaxed),
+        ui_loop_us: METRICS.ui_loop_us.swap(0, Ordering::Relaxed),
+        ui_work_us: METRICS.ui_work_us.swap(0, Ordering::Relaxed),
+        rx_drain_max: METRICS.rx_drain_max.swap(0, Ordering::Relaxed),
+        rtc_cpu_us: METRICS.rtc_cpu_us.swap(0, Ordering::Relaxed),
+        idr_bytes: METRICS.idr_bytes.swap(0, Ordering::Relaxed),
+        kf_req: METRICS.kf_req.swap(0, Ordering::Relaxed),
+        // Session constants: loaded, never swapped.
+        clk_arm_mhz: METRICS.clk_arm_mhz.load(Ordering::Relaxed),
+        clk_bus_mhz: METRICS.clk_bus_mhz.load(Ordering::Relaxed),
+        clk_gpu_mhz: METRICS.clk_gpu_mhz.load(Ordering::Relaxed),
+        clk_xbar_mhz: METRICS.clk_xbar_mhz.load(Ordering::Relaxed),
+        rcvbuf_def_bytes: METRICS.rcvbuf_def_bytes.load(Ordering::Relaxed),
+        // Pause probes: per-second maxima, swapped like the other counters.
+        rx_gap_max_us: METRICS.rx_gap_max_us.swap(0, Ordering::Relaxed),
+        rtc_gap_max_us: METRICS.rtc_gap_max_us.swap(0, Ordering::Relaxed),
+        rtc_pump_max_us: METRICS.rtc_pump_max_us.swap(0, Ordering::Relaxed),
+        au_scratch: METRICS.au_scratch.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -569,10 +645,6 @@ pub(crate) fn reset_session_metrics() {
     METRICS.video_bandwidth_kbps.store(0, Ordering::Relaxed);
     METRICS.display_pickup_us.store(0, Ordering::Relaxed);
     METRICS.display_pickup_max_us.store(0, Ordering::Relaxed);
-    METRICS.sr_anchor_ntp.store(0, Ordering::Relaxed);
-    METRICS.sr_anchor_rtp_ts.store(0, Ordering::Relaxed);
-    METRICS.sr_anchor_local_us.store(0, Ordering::Relaxed);
-    METRICS.sr_anchor_local_wall_us.store(0, Ordering::Relaxed);
     METRICS.sr_age_ms.store(0, Ordering::Relaxed);
     METRICS.sr_clock_offset_ms.store(0, Ordering::Relaxed);
     METRICS.capture_to_arrival_us.store(0, Ordering::Relaxed);
@@ -599,6 +671,16 @@ pub(crate) fn reset_session_metrics() {
     METRICS.pli_idr_ms_max.store(0, Ordering::Relaxed);
     METRICS.rtp_ext_twcc.store(0, Ordering::Relaxed);
     METRICS.rtcp_rtpfb_any.store(0, Ordering::Relaxed);
+    METRICS.ui_loop_us.store(0, Ordering::Relaxed);
+    METRICS.ui_work_us.store(0, Ordering::Relaxed);
+    METRICS.rx_drain_max.store(0, Ordering::Relaxed);
+    METRICS.rtc_cpu_us.store(0, Ordering::Relaxed);
+    METRICS.idr_bytes.store(0, Ordering::Relaxed);
+    METRICS.kf_req.store(0, Ordering::Relaxed);
+    METRICS.rx_gap_max_us.store(0, Ordering::Relaxed);
+    METRICS.rtc_gap_max_us.store(0, Ordering::Relaxed);
+    METRICS.rtc_pump_max_us.store(0, Ordering::Relaxed);
+    METRICS.au_scratch.store(0, Ordering::Relaxed);
 }
 
     /// Flush the RAM-buffered metrics CSV log to disk once at session end.

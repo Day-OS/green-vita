@@ -1,7 +1,7 @@
 # METRICS CSV Reference
 
-**Source**: `src/streaming/video/metrics_log.rs:27` — HEADER constant, compiler-enforced `[i64; 99]` array in `write_row()`.
-**Total columns**: 99. Order must match the `cols: [i64; 99]` arrays in `write_row()` and `csv_row_from_snapshot()`.
+**Source**: `src/streaming/video/metrics_log.rs:27` — HEADER constant, compiler-enforced `[i64; 106]` array in `write_row()`.
+**Total columns**: 106 (100 on the 0.3.2 line; 101–106 added 2026-11-24 by the xHome performance plan, stage 0). Order must match the `cols: [i64; 106]` arrays in `write_row()` and `csv_row_from_snapshot()`; `test_csv_header_row_column_count_match` asserts the count.
 **Scope**: Per-second snapshot drained at `status()` time via `drain_metrics()`. Appended to `ux0:data/xcloud-rust/metrics.csv` at session end.
 
 | # | Column Name | Type/Units | Meaning | "Bad" Looks Like |
@@ -109,3 +109,17 @@
 **Uncertain columns**: If a column's meaning could not be determined from the code + HANDOFF context, it is marked as such. See the "Uncertain Mappings" section in `docs/HUD-REFERENCE.md` for HUD fields with similar treatment.
 | 98 | `pli_idr_ms_last` | `i64` ms | Latency of the first IDR after a damage-policy shed (PLI→IDR). Last event. | Sustained high = console slow to answer keyframe requests. |
 | 99 | `pli_idr_ms_max` | `i64` ms | Worst PLI→IDR latency this session. | High max = occasional long Quality-mode stalls. |
+
+## Columns 100–106 (latency profile + performance-plan probes)
+
+Columns 101–106 are observe-only probes: they change no streaming behaviour. `scripts/session-report.py` (outer repo) reads them.
+
+| # | Column Name | Type/Units | Meaning | "Bad" Looks Like |
+|---|---|---|---|---|
+| 100 | `jb_target` | `i64` (count) | Latency-profile target bank depth at last submit (Fast = 0, Smooth = 6). | — (informational) |
+| 101 | `ui_loop_us` | `i64` µs | Last UI-loop period (start of one iteration to the start of the next), sampled in the second. `0` = no sample landed before the drain. | Far from ~16 700 µs, or a wide spread: the loop is timer-paced, not vblank-locked. |
+| 102 | `ui_work_us` | `i64` µs | Last UI-loop work time (iteration start to just after the frame is presented). | High = UI/render work leaves little of the frame budget; raises the loop period. |
+| 103 | `rx_drain_max` | `i64` (count) | Largest number of datagrams the receive thread drained between two idle moments: how much had queued in the kernel socket. | Large values = the receive thread is not keeping up (starved or buffer too small). |
+| 104 | `rtc_cpu_us` | `i64` µs | Time the RTC thread spent inside the WebRTC read path (`peer.handle_read`: SRTP decrypt, RTP demux) during the second. | A large share of 1 000 000 µs = the RTC thread is CPU-bound. |
+| 105 | `idr_bytes` | `i64` bytes | Bytes of IDR (keyframe) access units submitted in the second. Divide by `video_bandwidth_kbps * 125` for the keyframe share of the stream. | A high share = bitrate spent on keyframes instead of picture. |
+| 106 | `kf_req` | `i64` (count) | Keyframe requests actually sent in the second (after the cooldown gate). Compare with `au_idr_submitted`. | IDRs per request well above 1 = the console answers one request with several keyframes. |

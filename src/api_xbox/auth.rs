@@ -492,16 +492,22 @@ impl MsalAuth {
         &self,
         gssv_token: &str,
         offering: &str,
+        region_bypass_ip: Option<&str>,
     ) -> Result<EndpointCredentials> {
         let body = serde_json::json!({
             "token": gssv_token,
             "offeringId": offering,
         });
 
+        // region bypass: a spoofed X-Forwarded-For
+        let mut headers = vec![("x-gssv-client", "XboxComBrowser")];
+        if let Some(ip) = region_bypass_ip {
+            headers.push(("X-Forwarded-For", ip));
+        }
         let response: StreamingTokenResponse = self
             .post_json(
                 format!("https://{offering}.gssv-play-prod.xboxlive.com/v2/login/user"),
-                &[("x-gssv-client", "XboxComBrowser")],
+                &headers,
                 &body,
                 &format!("streaming token (offering {offering})"),
             )
@@ -510,7 +516,11 @@ impl MsalAuth {
         response.into_credentials()
     }
 
-    pub async fn fetch_streaming_credentials(&mut self) -> Result<StreamingCredentials> {
+    /// `region_bypass_ip` is not applied to xHome
+    pub async fn fetch_streaming_credentials(
+        &mut self,
+        region_bypass_ip: Option<&str>,
+    ) -> Result<StreamingCredentials> {
         let access_token = self.refresh_user_token().await?;
         let web_token = self.xsts_user_authenticate(&access_token).await?;
         let gssv_token = self
@@ -521,7 +531,7 @@ impl MsalAuth {
         // Region-restricted accounts fail the xhome offering even though local console
         // streaming is a different service.  Degrade to empty home credentials instead of
         // aborting the whole sign-in, so xHome stays usable in unsupported regions.
-        let home = match self.streaming_token(&gssv_token, "xhome").await {
+        let home = match self.streaming_token(&gssv_token, "xhome", None).await {
             Ok(home) => home,
             Err(error) => {
                 eprintln!("xHome token fetch failed (region restriction?); continuing without home credentials: {error:#}");
@@ -532,8 +542,12 @@ impl MsalAuth {
             }
         };
 
-        let primary = self.streaming_token(&gssv_token, "xgpuweb").await;
-        let f2p = self.streaming_token(&gssv_token, "xgpuwebf2p").await;
+        let primary = self
+            .streaming_token(&gssv_token, "xgpuweb", region_bypass_ip)
+            .await;
+        let f2p = self
+            .streaming_token(&gssv_token, "xgpuwebf2p", region_bypass_ip)
+            .await;
 
         let cloud = match primary {
             Ok(cloud) => cloud,

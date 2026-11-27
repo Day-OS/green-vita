@@ -24,7 +24,7 @@ pub(crate) struct RowExtras {
 
 const MAX_ROWS: usize = 20_000;
 /// CSV header for per-session metrics log. Updated in sync with the cols array in write_row.
-const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,q_us,q_us_max,q_slope_mpm,sh_match,sh_bound_mismatch,sh_bytes_mismatch,sh_class_mismatch,sh_new_damaged_old_complete,sh_new_complete_old_abandon,sh_hold_saved,sh_legacy_unmatched,sh_new_unmatched,au_submitted,au_no_startcode,au_idr_submitted,sh_reject_bound_artifact,late_after_resolve,dam_markerless,dam_first_slice,dam_holes,rtp_ext_twcc,rtcp_rtpfb_any,rtcp_sr_count,rtcp_sr_raw,rtcp_nack_sent,rtx_packets_received,rtx_crate_seen,sr_age_ms,sr_clock_offset_ms,capture_to_arrival_us,capture_to_arrival_max_us,twcc_delay_med_us,twcc_delay_max_us,sr_anc_ntp,sr_anc_rtp,sr_anc_lus,sr_anc_wall,grace_held,grace_filled,grace_expired,probe_rtt_ms_x10,probe_dl_mbps_x10,probe_suggest_kbps,jb_boost,jb_depth,jb_absorbed,damaged_dropped,pli_idr_ms_last,pli_idr_ms_max,jb_target";
+const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,q_us,q_us_max,q_slope_mpm,sh_match,sh_bound_mismatch,sh_bytes_mismatch,sh_class_mismatch,sh_new_damaged_old_complete,sh_new_complete_old_abandon,sh_hold_saved,sh_legacy_unmatched,sh_new_unmatched,au_submitted,au_no_startcode,au_idr_submitted,sh_reject_bound_artifact,late_after_resolve,dam_markerless,dam_first_slice,dam_holes,rtp_ext_twcc,rtcp_rtpfb_any,rtcp_sr_count,rtcp_sr_raw,rtcp_nack_sent,rtx_packets_received,rtx_crate_seen,sr_age_ms,sr_clock_offset_ms,capture_to_arrival_us,capture_to_arrival_max_us,twcc_delay_med_us,twcc_delay_max_us,sr_anc_ntp,sr_anc_rtp,sr_anc_lus,sr_anc_wall,grace_held,grace_filled,grace_expired,probe_rtt_ms_x10,probe_dl_mbps_x10,probe_suggest_kbps,jb_boost,jb_depth,jb_absorbed,damaged_dropped,pli_idr_ms_last,pli_idr_ms_max,jb_target,ui_loop_us,ui_work_us,rx_drain_max,rtc_cpu_us,idr_bytes,kf_req,clk_arm_mhz,clk_bus_mhz,clk_gpu_mhz,clk_xbar_mhz,rcvbuf_def_bytes,rx_gap_max_us,rtc_gap_max_us,rtc_pump_max_us,au_scratch";
 
 /// RAM-buffered CSV log for a streaming session.
 /// Rows are accumulated at 1 Hz from status() and flushed once at session end.
@@ -59,7 +59,7 @@ impl MetricsCsvLog {
         let t_s = self.started_at.elapsed().as_secs();
         // Fixed-size array so the column count is compiler-enforced and can never
         // drift out of sync with HEADER. Order MUST match HEADER below.
-        let cols: [i64; 100] = [
+        let cols: [i64; 115] = [
             t_s as i64,
             snapshot.rtp_assembly_sum_us as i64,
             snapshot.rtp_assembly_count as i64,
@@ -143,8 +143,8 @@ impl MetricsCsvLog {
             snapshot.capture_to_arrival_max_us as i64,
             snapshot.twcc_delay_med_us as i64,
             snapshot.twcc_delay_max_us as i64,
-            snapshot.sr_anchor_ntp as i64,
-            snapshot.sr_anchor_rtp_ts as i64,
+            0, // sr_anchor_ntp: SRTCP-encrypted, unreadable,
+            0, // sr_anchor_rtp_ts: SRTCP-encrypted, unreadable,
             snapshot.sr_anchor_local_us as i64,
             snapshot.sr_anchor_local_wall_us as i64,
             snapshot.grace_held as i64,
@@ -160,6 +160,21 @@ impl MetricsCsvLog {
             snapshot.pli_idr_ms_last as i64,
             snapshot.pli_idr_ms_max as i64,
             snapshot.jb_target as i64,
+            snapshot.ui_loop_us as i64,
+            snapshot.ui_work_us as i64,
+            snapshot.rx_drain_max as i64,
+            snapshot.rtc_cpu_us as i64,
+            snapshot.idr_bytes as i64,
+            snapshot.kf_req as i64,
+            snapshot.clk_arm_mhz as i64,
+            snapshot.clk_bus_mhz as i64,
+            snapshot.clk_gpu_mhz as i64,
+            snapshot.clk_xbar_mhz as i64,
+            snapshot.rcvbuf_def_bytes as i64,
+            snapshot.rx_gap_max_us as i64,
+            snapshot.rtc_gap_max_us as i64,
+            snapshot.rtc_pump_max_us as i64,
+            snapshot.au_scratch as i64,
         ];
         let row = cols
             .iter()
@@ -226,7 +241,7 @@ impl MetricsCsvLog {
 // Private helper: build a CSV row string from a MetricsSnapshot (mirrors write_row logic).
 fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
     // Same 55-element layout as the cols array in write_row, using i64 values.
-    let cols: [i64; 100] = [
+    let cols: [i64; 115] = [
         0 as i64,                                                    // t_s
         snapshot.rtp_assembly_sum_us as i64,
         snapshot.rtp_assembly_count as i64,
@@ -310,8 +325,8 @@ fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
         snapshot.capture_to_arrival_max_us as i64,
         snapshot.twcc_delay_med_us as i64,
         snapshot.twcc_delay_max_us as i64,
-        snapshot.sr_anchor_ntp as i64,
-        snapshot.sr_anchor_rtp_ts as i64,
+        0, // sr_anchor_ntp: SRTCP-encrypted, unreadable,
+        0, // sr_anchor_rtp_ts: SRTCP-encrypted, unreadable,
         snapshot.sr_anchor_local_us as i64,
         snapshot.sr_anchor_local_wall_us as i64,
         snapshot.grace_held as i64,
@@ -327,6 +342,21 @@ fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
         snapshot.pli_idr_ms_last as i64,
         snapshot.pli_idr_ms_max as i64,
         snapshot.jb_target as i64,
+        snapshot.ui_loop_us as i64,
+        snapshot.ui_work_us as i64,
+        snapshot.rx_drain_max as i64,
+        snapshot.rtc_cpu_us as i64,
+        snapshot.idr_bytes as i64,
+        snapshot.kf_req as i64,
+        snapshot.clk_arm_mhz as i64,
+        snapshot.clk_bus_mhz as i64,
+        snapshot.clk_gpu_mhz as i64,
+        snapshot.clk_xbar_mhz as i64,
+        snapshot.rcvbuf_def_bytes as i64,
+        snapshot.rx_gap_max_us as i64,
+        snapshot.rtc_gap_max_us as i64,
+        snapshot.rtc_pump_max_us as i64,
+        snapshot.au_scratch as i64,
     ];
     cols.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(",")
 }
@@ -358,8 +388,6 @@ mod tests {
             sr_clock_offset_ms: 0,
             capture_to_arrival_us: 0,
             capture_to_arrival_max_us: 0,
-            sr_anchor_ntp: 0,
-            sr_anchor_rtp_ts: 0,
             sr_anchor_local_us: 0,
             sr_anchor_local_wall_us: 0,
             stream_lag_max_us: 0,
@@ -432,8 +460,28 @@ mod tests {
             pli_idr_ms_last: 0,
             pli_idr_ms_max: 0,
             jb_target: 0,
+            ui_loop_us: 0,
+            ui_work_us: 0,
+            rx_drain_max: 0,
+            rtc_cpu_us: 0,
+            idr_bytes: 0,
+            kf_req: 0,
+            clk_arm_mhz: 0,
+            clk_bus_mhz: 0,
+            clk_gpu_mhz: 0,
+            clk_xbar_mhz: 0,
+            rcvbuf_def_bytes: 0,
+            rx_gap_max_us: 0,
+            rtc_gap_max_us: 0,
+            rtc_pump_max_us: 0,
+            au_scratch: 0,
         };
 
+        assert_eq!(
+            HEADER.split(',').count(),
+            115,
+            "CSV header must have exactly 115 columns"
+        );
         let row = csv_row_from_snapshot(&snapshot);
         let header_cols = HEADER.split(',').count();
         let row_cols = row.split(',').count();
@@ -468,8 +516,6 @@ mod tests {
             sr_clock_offset_ms: 0,
             capture_to_arrival_us: 0,
             capture_to_arrival_max_us: 0,
-            sr_anchor_ntp: 0,
-            sr_anchor_rtp_ts: 0,
             sr_anchor_local_us: 0,
             sr_anchor_local_wall_us: 0,
             stream_lag_max_us: 0,
@@ -542,6 +588,21 @@ mod tests {
             pli_idr_ms_last: 0,
             pli_idr_ms_max: 0,
             jb_target: 0,
+            ui_loop_us: 0,
+            ui_work_us: 0,
+            rx_drain_max: 0,
+            rtc_cpu_us: 0,
+            idr_bytes: 0,
+            kf_req: 0,
+            clk_arm_mhz: 0,
+            clk_bus_mhz: 0,
+            clk_gpu_mhz: 0,
+            clk_xbar_mhz: 0,
+            rcvbuf_def_bytes: 0,
+            rx_gap_max_us: 0,
+            rtc_gap_max_us: 0,
+            rtc_pump_max_us: 0,
+            au_scratch: 0,
         };
 
         let row = csv_row_from_snapshot(&snapshot);

@@ -35,7 +35,6 @@ impl XboxStreamingBackend {
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
         color_profile: ColorProfile,
-        periodic_keyframe: bool,
     ) -> Result<Self> {
         let worker = worker::spawn(
             stream.clone(),
@@ -43,7 +42,6 @@ impl XboxStreamingBackend {
             video_bitrate_kbps,
             video_h264_profile,
             color_profile,
-            periodic_keyframe,
         )?;
         Ok(Self {
             stream,

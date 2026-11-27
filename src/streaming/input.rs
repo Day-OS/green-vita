@@ -29,6 +29,38 @@ pub struct GamepadFrame {
     pub right_trigger: f32,
 }
 
+impl GamepadFrame {
+    /// True when no button is pressed and every axis is inside a small
+    /// deadzone. Used to re-arm input after the pause menu closes: the resume
+    /// button is still held, so input stays blocked until the pad is neutral.
+    pub fn is_neutral(&self) -> bool {
+        let buttons = [
+            self.nexus,
+            self.menu,
+            self.view,
+            self.a,
+            self.b,
+            self.x,
+            self.y,
+            self.dpad_up,
+            self.dpad_down,
+            self.dpad_left,
+            self.dpad_right,
+            self.left_shoulder,
+            self.right_shoulder,
+            self.left_thumb,
+            self.right_thumb,
+            self.left_trigger,
+            self.right_trigger,
+        ];
+        buttons.iter().all(|v| *v == 0.0)
+            && self.left_thumb_x_axis.abs() < 0.05
+            && self.left_thumb_y_axis.abs() < 0.05
+            && self.right_thumb_x_axis.abs() < 0.05
+            && self.right_thumb_y_axis.abs() < 0.05
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PointerEvent {
     pub contact_major: u16,

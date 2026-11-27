@@ -23,7 +23,7 @@ use rtc::rtp::codec::opus::OpusPacket;
 #[cfg(test)]
 use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 #[cfg(test)]
 use std::time::Duration;
@@ -51,7 +51,8 @@ const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 /// per packet with Relaxed, applies live mid-stream without reconnecting.
 pub(crate) static MANUAL_TWCC: AtomicBool = AtomicBool::new(false);
 
-/// Store the manual-TWCC master switch (settings checkbox / stream start).
+/// Hidden/compile-time switch (no settings row): store the manual-TWCC master
+/// switch. Read from `Settings::manual_twcc_60ms` at stream start.
 pub(crate) fn set_manual_twcc(enabled: bool) {
     MANUAL_TWCC.store(enabled, Ordering::Relaxed);
 }
@@ -101,6 +102,10 @@ pub(crate) struct VideoRtp {
     last_frame_timestamp: Option<u32>,
     source_frame_duration_us: Option<u64>,
     damage_score: u8,
+    /// 2026-11-26: last time a clean (non-damaged) AU was submitted. When
+    /// damage persists >= SUSTAINED_DAMAGE_MS the artefacts never clear on
+    /// their own (the console's next IDR can be ~2 s away), so request one.
+    last_clean_at: Option<Instant>,
     stream_too_large: bool,
     waiting_for_keyframe: bool,
     pli_idr_pending_at: Option<std::time::Instant>,
@@ -266,6 +271,7 @@ impl VideoRtp {
             last_frame_timestamp: None,
             source_frame_duration_us: None,
             damage_score: 0,
+            last_clean_at: None,
             stream_too_large: false,
             waiting_for_keyframe: false,
             pli_idr_pending_at: None,
@@ -561,6 +567,39 @@ impl VideoRtp {
             ..
         } = au;
         self.update_stream_lag(au.timestamp, au.first_packet_at);
+        // AU-level one-way delay on the media clock, relative to the session's
+        // first AU (perf plan 2026-11-26): delay = first-packet arrival µs −
+        // RTP timestamp/90 kHz. Both timelines tick in real time, so the
+        // constant console capture offset cancels; GROWTH in this column is
+        // console-encode + network + receive-queue latency accumulation,
+        // measured with no clock sync and independent of the decoder (that is
+        // `pipeline_age_us`). Absolute capture-to-arrival would need the SR NTP
+        // anchor, which the console SRTCP-encrypts (see transport.rs). One-off
+        // step after ~13.2 h when the 32-bit RTP timestamp wraps.
+        {
+            let arrival_us = au
+                .first_packet_at
+                .duration_since(*SHADOW_CLOCK)
+                .as_micros() as i64;
+            let media_us = i64::from(au.timestamp) * 100 / 9;
+            let delay_raw = arrival_us - media_us;
+            let base = match DELAY_BASE_US.compare_exchange(
+                i64::MIN,
+                delay_raw,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => delay_raw,
+                Err(existing) => existing,
+            };
+            let relative_us = delay_raw - base;
+            METRICS
+                .capture_to_arrival_us
+                .store(relative_us, Ordering::Relaxed);
+            METRICS
+                .capture_to_arrival_max_us
+                .fetch_max(relative_us, Ordering::Relaxed);
+        }
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = au.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
@@ -575,14 +614,14 @@ impl VideoRtp {
 
         // Drift instrumentation: accumulate slip metric from the latest video packet.
         if let Some(slip) = self.stream_slip() {
-            let (slip_ms, _wall_ms, media_ms) = slip;
+            let (slip_us, _wall_us, _media_us) = slip;
             // Current slip (updated every packet; HUD reads this value).
             // Store signed slip directly — no clamp to positive, since signed
             // slip conveys direction (wall vs media time). Cite
             // RENDERING-PIPELINE-ARCHITECTURE-PROPOSITION.md §4.4.
-            METRICS.stream_slip_us.store(slip_ms as i64, Ordering::Relaxed);
+            METRICS.stream_slip_us.store(slip_us, Ordering::Relaxed);
             // Maximum slip observed during the session (max absolute magnitude).
-            METRICS.stream_slip_max_us.fetch_max(slip_ms.unsigned_abs() as u64, Ordering::Relaxed);
+            METRICS.stream_slip_max_us.fetch_max(slip_us.unsigned_abs() as u64, Ordering::Relaxed);
             // One-shot base slope: capture once when wall-time since anchor ≥ 60 s.
             let anchor_age_secs = self.stream_clock_anchor
                 .map_or(0.0, |(anchor_at, _)| anchor_at.elapsed().as_secs_f64());
@@ -590,15 +629,16 @@ impl VideoRtp {
                 && anchor_age_secs >= 60.0
             {
                 // Session-fixed base: never re-based for the duration of this session.
-                METRICS.stream_slip_slope_mpm.store(slip_ms as i64, Ordering::Relaxed);
+                METRICS.stream_slip_slope_mpm.store(slip_us, Ordering::Relaxed);
             } else if METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) != 0
             {
                 // Compute running slope relative to the base captured at ~60 s.
-                // slope in ms/min: (delta_us * 60) / (1000 * elapsed_s)
-                let base_slip = METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) as i64;
+                // slip is µs, slope is reported in ms/min:
+                // (delta_us / 1000) ms per elapsed_s seconds, × 60 for a minute.
+                let base_slip = METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed);
                 let elapsed_s = anchor_age_secs - 60.0; // seconds after the 60s base point
                 if elapsed_s > 1.0 {
-                    let delta_us = slip_ms as i64 - base_slip as i64;
+                    let delta_us = slip_us - base_slip;
                     let slope_mpm = (delta_us as f64 * 60.0) / (1000.0 * elapsed_s);
                     METRICS.stream_slip_slope_mpm.store(slope_mpm.round() as i64, Ordering::Relaxed);
                 }
@@ -665,8 +705,10 @@ impl VideoRtp {
             }
             self.waiting_for_keyframe = false;
             self.damage_score = 0;
+            self.last_clean_at = Some(Instant::now());
         } else if !frame_was_damaged {
             self.damage_score = self.damage_score.saturating_sub(1);
+            self.last_clean_at = Some(Instant::now());
         }
 
         // 8a telemetry (§3): submitted-AU counters that would have caught the
@@ -679,10 +721,19 @@ impl VideoRtp {
         }
         if unit.has_idr {
             METRICS.au_idr_submitted.fetch_add(1, Ordering::Relaxed);
+            // Perf-plan stage 0 probe: keyframe share of the stream's bytes.
+            METRICS
+                .idr_bytes
+                .fetch_add(data.len() as u64, Ordering::Relaxed);
         }
         if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
-            eprintln!("Video decoder queue is full; continuing while requesting a keyframe");
-            *keyframe_requested = true;
+            // Perf-plan stage 3: a decode-queue rejection is our own
+            // back-pressure, not stream damage — requesting a keyframe on top
+            // of the dropped frame made the console send its largest frames
+            // at the worst moment. Stage 3 drains bursts by retiring stale
+            // decoded pictures, so this path should be rare; if it fires,
+            // the following frames conceal until the next natural keyframe.
+            eprintln!("Video decoder queue is full; dropping the frame without a keyframe request");
             stats.dropped = stats.dropped.saturating_add(1);
         }
         stats
@@ -780,7 +831,29 @@ impl VideoRtp {
                 self.next_sequence = desc
                     .marker_seen
                     .then(|| desc.last_seq.wrapping_add(1));
-                *keyframe_requested = true;
+                // Step 6 (2026-11-26): the immediate keyframe request is a
+                // property of the SHED policies, not of damage itself. The
+                // LowLatency default is documented as "decodes through: brief
+                // artefacts, no stall", but this line requested a keyframe on
+                // EVERY damaged AU regardless of policy -- 128 damaged AUs
+                // became 112 PLIs and 199 IDRs (14.5 MB) in 736 s. Under
+                // LowLatency the gentler `record_damage` threshold (3 events at
+                // 60 fps) is the trigger, and the resync path requests the
+                // keyframe from `finish_au` while `waiting_for_keyframe` is set,
+                // so the chain still recovers.
+                if DAMAGE_POLICY.load(Ordering::Relaxed) != 0 {
+                    *keyframe_requested = true;
+                }
+                // 2026-11-26: prolonged-artefact reaction. A single first-slice
+                // loss can stay blocky until the console's next IDR (~2 s). If
+                // no clean AU has been submitted for >= 1 s, request one now
+                // instead of waiting out the damage_score threshold.
+                if self
+                    .last_clean_at
+                    .is_some_and(|last| last.elapsed() >= std::time::Duration::from_millis(SUSTAINED_DAMAGE_MS))
+                {
+                    *keyframe_requested = true;
+                }
                 self.record_damage(worker);
                 *frame_was_damaged = true;
                 stats.dropped = stats.dropped.saturating_add(1);
@@ -904,16 +977,18 @@ impl VideoRtp {
             .stream_lag_max_us
             .fetch_max(lag_us, Ordering::Relaxed);
     }
-    /// Drift instrumentation: (slip_ms, wall_ms, media_ms).  slip = wall time
+    /// Drift instrumentation: (slip_us, wall_us, media_us).  slip = wall time
     /// since the session anchor minus media time (RTP clock at 90 kHz) advanced
     /// since the anchor.  A flat slope means arrivals keep pace with the media
     /// timeline; a growing slope means they increasingly fall behind.
+    /// Units are microseconds throughout — the CSV columns are `*_us`.
     pub(crate) fn stream_slip(&self) -> Option<(i64, i64, i64)> {
         let (anchor_at, anchor_ts) = self.stream_clock_anchor?;
         let (arrival_at, arrival_ts) = self.latest_rtp?;
-        let wall_ms = arrival_at.duration_since(anchor_at).as_millis() as i64;
-        let media_ms = (arrival_ts.wrapping_sub(anchor_ts) as i64) * 1000 / 90;
-        Some((wall_ms - media_ms, wall_ms, media_ms))
+        let wall_us = arrival_at.duration_since(anchor_at).as_micros() as i64;
+        // 90 kHz ticks -> µs is ticks/90 ms -> ticks * 1000/90000 µs = *100/9.
+        let media_us = (arrival_ts.wrapping_sub(anchor_ts) as i64) * 100 / 9;
+        Some((wall_us - media_us, wall_us, media_us))
     }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     /// 2026-10-30: stub 0 feeding the twcc_stride CSV — real value needs the
@@ -1506,6 +1581,10 @@ static NEG_AST_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8
 /// severe damage), 2 Quality (shed-to-IDR on every damaged AU). Step 6;
 /// written by the app at stream start, read in the Damaged arm.
 pub(crate) static DAMAGE_POLICY: AtomicU8 = AtomicU8::new(0);
+
+/// 2026-11-26: if no clean AU has been submitted for this long while damage
+/// is still occurring, request a keyframe (prolonged-artefact reaction).
+const SUSTAINED_DAMAGE_MS: u64 = 1000;
 static NEG_VT_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// 2a: store the answer-negotiated TWCC extension id (this was an empty stub
@@ -1616,6 +1695,12 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
 
 /// Monotonic µs clock for the shadow assembler's 12 ms hold window.
 static SHADOW_CLOCK: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Baseline for `capture_to_arrival_us` (AU-level one-way delay): the
+/// (arrival − media-time) value of the session's first completed AU, in µs on
+/// SHADOW_CLOCK. `i64::MIN` = not yet set. Relative values make growth
+/// readable without clock sync (see `finish_au`).
+static DELAY_BASE_US: AtomicI64 = AtomicI64::new(i64::MIN);
 
 // ---------------------------------------------------------------------------
 // TWCC socket-arrival stamping (A arm of the 2026-11-01 stamp A/B). The

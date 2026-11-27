@@ -11,6 +11,8 @@ use tokio::task::JoinHandle;
 pub(crate) struct CredentialsLoadResult {
     pub(super) result: Result<(StreamingCredentials, Option<XboxProfile>)>,
     pub(super) auth: MsalAuth,
+    /// the bypass IP this sign-in used to remember working ones
+    pub(super) region_bypass_ip: Option<String>,
 }
 
 pub(crate) enum AppState {

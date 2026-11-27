@@ -20,7 +20,6 @@ struct XboxRtcWorkerProvider {
     video_bitrate_kbps: u32,
     video_h264_profile: H264Profile,
     color_profile: ColorProfile,
-    periodic_keyframe: bool,
 }
 
 impl RtcWorkerProvider for XboxRtcWorkerProvider {
@@ -45,7 +44,6 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
                 output_height: HW_OUTPUT_HEIGHT,
                 color_profile: self.color_profile,
             },
-            periodic_keyframe_enabled: self.periodic_keyframe,
         }
     }
 
@@ -90,7 +88,6 @@ pub(crate) fn spawn(
     video_bitrate_kbps: u32,
     video_h264_profile: H264Profile,
     color_profile: ColorProfile,
-    periodic_keyframe: bool,
 ) -> Result<RtcWorker> {
     let video_fps = if request_60fps {
         UNLOCKED_VIDEO_FPS
@@ -103,6 +100,5 @@ pub(crate) fn spawn(
         video_bitrate_kbps,
         video_h264_profile,
         color_profile,
-        periodic_keyframe,
     })
 }

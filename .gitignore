@@ -1,2 +1,4 @@
 /target
 /.xcloud-probe-token.json
+# host-test residue: tests write to the device-relative ux0:data path
+/ux0:data

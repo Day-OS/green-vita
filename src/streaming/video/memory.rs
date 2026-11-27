@@ -69,13 +69,13 @@ fn free_memory_summary() -> String {
     }
 }
 
-pub(super) struct CdramBlock {
+pub(crate) struct CdramBlock {
     uid: SceUID,
-    pub(super) ptr: *mut u8,
+    pub(crate) ptr: *mut u8,
 }
 
 impl CdramBlock {
-    pub(super) fn allocate(name: &str, size: u32) -> Result<Self> {
+    pub(crate) fn allocate(name: &str, size: u32) -> Result<Self> {
         let c_name = CString::new(name).expect("static name has no interior NUL");
         let capacity = size.div_ceil(BLOCK_ALIGNMENT) * BLOCK_ALIGNMENT;
         let mut options = SceKernelAllocMemBlockOpt {

@@ -1,11 +1,26 @@
 use super::decoder::HwVideoDecoder;
 use super::metrics;
-use super::{DecodedFrame, DecoderConfig, DirectVideoOutput};
+use super::{DecodedFrame, DecoderConfig, DirectVideoOutput, DirectVideoTargetGuard};
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, unbounded};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Backlog depth at which an access unit is considered stale and retired into
+/// the scratch texture instead of being displayed. Depth 1 is ordinary jitter
+/// (the queue oscillates 0<->1 every frame), so retiring there starves the
+/// display; only a genuine burst (>= 2 already queued) is worth skipping.
+const RETIRE_DEPTH: usize = 2;
+/// Smooth profile keeps a deep bank by design (admission limit up to 13, i.e.
+/// ~+100-200 ms of intentional buffering). Retiring at `RETIRE_DEPTH` there
+/// would treat the bank itself as a burst and starve the display -- the
+/// 2026-11-26 "Smooth gives frame drops and freezes" report. Retire at the
+/// bank target (6): keep the intended 6-frame bank, retire beyond it. A
+/// threshold of 12 (the admission edge) disabled retire entirely, so the
+/// consumer could not drain and the queue backed up (queue_full 46/s, 52/s
+/// decoded in the 4e1cd3a Smooth session).
+const RETIRE_DEPTH_SMOOTH: usize = 6;
 use std::time::{Duration, Instant};
 use crate::pipeline::decode::{Admission, DecodeScheduler, SchedulerMode};
 
@@ -258,6 +273,46 @@ fn run_decode_loop(
             },
             recv(access_units) -> access_unit => {
                 let Ok(access_unit) = access_unit else { break };
+                // Perf-plan stage 3c (2026-11-26): when a newer access unit is
+                // already queued, this one is stale. Decode it anyway — the
+                // H.264 reference chain must stay intact — into the
+                // decoder-private scratch texture, and never publish it, never
+                // pace-sleep after it. The scratch texture is outside the
+                // display ring and needs no ring state lock, so a stale decode
+                // no longer waits for the UI to consume `pending`: the backlog
+                // drains at decode speed instead of the 58 fps presentation
+                // rate. (Before: stale AUs blocked on the ring lock, so a
+                // 60 fps arrival rate outran the loop and `pipeline_age`
+                // drifted upward ~2.5 ms/min.)
+                //
+                // Revision 3 (2026-11-26): the retire decision needs a DEPTH
+                // threshold, not "any". With `!is_empty()` the queue's normal
+                // 0<->1 jitter retired 27 % of all access units (4350 of 16205
+                // in the bd8904d session), and a retired AU is one the display
+                // never gets -- 45 decoded/s instead of 60, seen as 10 fps
+                // freezes and jumps. Depth >= 2 only triggers on a real burst.
+                // Revision 4 (2026-11-26): the threshold is profile-aware. The
+                // Smooth profile deliberately holds a deep bank (admission limit
+                // up to 13), so a fixed depth of 2 retired the bank itself and
+                // starved the display -- the reported Smooth freezes. Fast keeps
+                // depth 2 (its queue genuinely oscillates 0<->1); Smooth retires
+                // only at the admission edge.
+                let retire_depth = if LATENCY_PROFILE.load(Ordering::Relaxed) == 1 {
+                    RETIRE_DEPTH_SMOOTH
+                } else {
+                    RETIRE_DEPTH
+                };
+                let retire = access_units.len() >= retire_depth;
+                let scratch = if retire {
+                    direct_output.lock_scratch_target()
+                } else {
+                    None
+                };
+                if retire && scratch.is_none() {
+                    // Renderer has not registered its textures yet.
+                    metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 decode_queued_access_unit(
                     &mut decoder,
                     config,
@@ -266,9 +321,18 @@ fn run_decode_loop(
                     &result_ready,
                     access_unit,
                     &direct_output,
+                    retire,
+                    scratch,
                 );
-                let queue_depth = access_units.len();
-                sleep(scheduler.yield_after_decode(queue_depth));
+                // Stage 3c, revision 2 (2026-11-26): the retire path is kept but
+                // the pace sleep is NO LONGER skipped for retired AUs. The first
+                // revision slept only for fresh frames, so a backlog drained at
+                // full decode speed; the device A/B showed that unpaced feeding
+                // makes sceAvcdec buffer pictures internally (`hw_buffered`
+                // 0.86/s vs 0.008/s), which is the 1 s accumulation. Pacing every
+                // decode keeps the decoder gated by the display while still
+                // retiring stale pictures without publishing them.
+                sleep(scheduler.yield_after_decode(access_units.len()));
             }
         }
     }
@@ -282,6 +346,8 @@ fn decode_queued_access_unit(
     result_ready: &tokio::sync::Notify,
     access_unit: QueuedAccessUnit,
     direct_output: &DirectVideoOutput,
+    retire: bool,
+    scratch: Option<DirectVideoTargetGuard<'_>>,
 ) {
     if access_unit.generation != generation.load(Ordering::Acquire) {
         return;
@@ -301,11 +367,19 @@ fn decode_queued_access_unit(
         }
     }
 
-    let Some(direct_target) = direct_output.lock_decode_target() else {
-        // Do not decode until the renderer has registered its two GXM textures. There is no
-        // legacy output buffer to copy from anymore.
-        metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
-        return;
+    // Stage 3: a stale frame arrives with its scratch texture pre-locked by
+    // the caller; the normal path locks the display ring as before.
+    let direct_target = match scratch {
+        Some(target) => target,
+        None => {
+            let Some(target) = direct_output.lock_decode_target() else {
+                // Do not decode until the renderer has registered its two GXM textures. There is no
+                // legacy output buffer to copy from anymore.
+                metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
+                return;
+            };
+            target
+        }
     };
     // Measure the hardware call and contain an unexpected decoder panic inside its worker.
     let decode_started_at = Instant::now();
@@ -325,24 +399,32 @@ fn decode_queued_access_unit(
 
     match decode_result {
         Ok(Ok(true)) => {
-            metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
-            let (texture_index, generation) = direct_target.publish();
-            let pipeline_age_us = access_unit.queued_at.elapsed().as_micros() as u64;
-            metrics::METRICS
-                .pipeline_age_us
-                .store(pipeline_age_us, Ordering::Relaxed);
-            metrics::METRICS
-                .pipeline_age_max_us
-                .fetch_max(pipeline_age_us, Ordering::Relaxed);
-            publish_result(
-                latest_result,
-                result_ready,
-                Ok(DecodedFrame {
-                    texture_index,
-                    generation,
-                    published_at: Instant::now(),
-                }),
-            );
+            if retire {
+                // Stage 3: the picture is stale (a newer access unit was
+                // queued behind it). It is retired before display — the
+                // texture guard drops without publish, so the slot stays
+                // free — while the decoder's reference state stays correct.
+                metrics::METRICS.au_scratch.fetch_add(1, Ordering::Relaxed);
+            } else {
+                metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
+                let (texture_index, generation) = direct_target.publish();
+                let pipeline_age_us = access_unit.queued_at.elapsed().as_micros() as u64;
+                metrics::METRICS
+                    .pipeline_age_us
+                    .store(pipeline_age_us, Ordering::Relaxed);
+                metrics::METRICS
+                    .pipeline_age_max_us
+                    .fetch_max(pipeline_age_us, Ordering::Relaxed);
+                publish_result(
+                    latest_result,
+                    result_ready,
+                    Ok(DecodedFrame {
+                        texture_index,
+                        generation,
+                        published_at: Instant::now(),
+                    }),
+                );
+            }
         }
         Ok(Ok(false)) => {
             metrics::METRICS.hw_buffered.fetch_add(1, Ordering::Relaxed);

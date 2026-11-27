@@ -1,7 +1,10 @@
 use crate::app::StreamingSession;
 use crate::settings::ColorProfile;
 use crate::shell::egui_painter::SdlEguiPainter;
-use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES};
+use crate::streaming::video::{
+    DirectVideoOutput, NUM_DISPLAY_TEXTURES, NUM_TEXTURES, VideoTextureTarget,
+    memory::CdramBlock,
+};
 use anyhow::{Context, Result};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, Texture};
@@ -21,6 +24,11 @@ pub struct VitaSurface {
     video_height: u32,
     last_frame_id: u64,
     egui_painter: SdlEguiPainter,
+    /// 2b: keeps the CDRAM framebuffers alive for direct mode.
+    cdram: Vec<CdramBlock>,
+    /// 2b: bytes per pixel and framebuffer pixelformat of the direct targets.
+    direct_bpp: u32,
+    direct_fmt: u32,
 }
 
 impl VitaSurface {
@@ -50,7 +58,25 @@ impl VitaSurface {
             video_height: 0,
             last_frame_id: 0,
             egui_painter: SdlEguiPainter::default(),
+            cdram: Vec::new(),
+            direct_bpp: 4,
+            direct_fmt: 0,
         })
+    }
+
+    /// True when a frame newer than the one currently displayed is available.
+    ///
+    /// Latency (2026-11-26): the Vita loop paces by the vblank counter, so a
+    /// frame published just after a loop iteration waited ~16 ms for the next
+    /// one (`display_pickup` median 13 ms). The renderer is created without
+    /// `PRESENTVSYNC`, so presenting off-vblank is already allowed; this lets
+    /// the loop break out of the vblank wait and present as soon as a frame
+    /// arrives. If the panel latches at vblank this is a no-op; if it scans
+    /// immediately it returns the pickup to ~1-2 ms.
+    pub fn has_new_frame(&self, streaming: Option<&StreamingSession>) -> bool {
+        streaming
+            .and_then(|s| s.video_frame())
+            .is_some_and(|(frame_id, _)| frame_id != self.last_frame_id)
     }
 
     /// Where the video quad lands on screen - accounts for letterboxing, see `fit_rect`.
@@ -72,7 +98,7 @@ impl VitaSurface {
             return Ok(());
         }
         let index = frame.texture_index;
-        if index >= NUM_TEXTURES {
+        if index >= NUM_DISPLAY_TEXTURES {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
         }
         crate::streaming::video::metrics::METRICS
@@ -107,12 +133,43 @@ impl VitaSurface {
         if !output.decoder_ready.load(Ordering::Acquire) {
             return Ok(());
         }
-        if output_is_current && self.video_textures.is_some() {
+        if output_is_current
+            && (self.video_textures.is_some() || self.direct_video_output.is_some())
+        {
             return Ok(());
         }
 
         self.detach_direct_video_output();
         let (width, height) = (output.width, output.height);
+        // 2b: direct mode -- our own CDRAM buffers as the decode targets
+        // (2 display + 1 scratch). RGBA8888 only: the display's second
+        // accepted format (0x50000000) is NOT B5G6R5 on this firmware --
+        // RGB565 direct produced a black screen with a healthy 60/60 pipeline
+        // (decoded=60, presented=60), so RGB565 falls back to the SDL path.
+        if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed)
+            && output.color_profile == ColorProfile::Rgba8888
+        {
+            let (bpp, fmt) = (4u32, 0u32);
+            let cap = width.saturating_mul(bpp).saturating_mul(height);
+            let pitch = width * bpp;
+            let b0 = CdramBlock::allocate("xcloud_fb0", cap)?;
+            let b1 = CdramBlock::allocate("xcloud_fb1", cap)?;
+            let bs = CdramBlock::allocate("xcloud_fb_scratch", cap)?;
+            let t0 = VideoTextureTarget { ptr: b0.ptr as usize, pitch, capacity: cap };
+            let t1 = VideoTextureTarget { ptr: b1.ptr as usize, pitch, capacity: cap };
+            let ts = VideoTextureTarget { ptr: bs.ptr as usize, pitch, capacity: cap };
+            output.set_targets([t0, t1, ts]);
+            self.cdram = vec![b0, b1, bs];
+            self.direct_bpp = bpp;
+            self.direct_fmt = fmt;
+            self.video_textures = None;
+            self.displayed_video_texture = None;
+            self.direct_video_output = Some(output);
+            self.video_width = width;
+            self.video_height = height;
+            self.last_frame_id = 0;
+            return Ok(());
+        }
         // Match the hardware decoder's output format (ColorProfile). SCE pixel-format
         // naming puts the red channel in the lowest byte/bits (the working RGB565 path
         // is the same convention: SCE "RGBA565" pairs with SDL BGR565), so SCE
@@ -131,6 +188,8 @@ impl VitaSurface {
         let mut textures: [_; NUM_TEXTURES] = [
             create_texture()?,
             create_texture()?,
+            // Decoder-private scratch (stage 3c): retired AUs decode here and
+            // are never displayed.
             create_texture()?,
         ];
         let mut targets: [_; NUM_TEXTURES] = [
@@ -202,6 +261,35 @@ impl VitaSurface {
         }
 
         Ok(())
+    }
+
+    /// Direct-present experiment: scan the drawn frame out immediately
+    /// (tearing) instead of at the next vblank. Returns `false` to fall back
+    /// to the normal SDL present.
+    pub fn present_direct(&mut self) -> Result<bool> {
+        if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed) {
+            let Some(index) = self.displayed_video_texture else {
+                return Ok(false);
+            };
+            if let Some(t) = self
+                .direct_video_output
+                .as_ref()
+                .and_then(|o| o.target(index))
+            {
+                if t.ptr != 0 {
+                    return Ok(crate::shell::direct_present::present_target(
+                        t.ptr,
+                        t.pitch,
+                        self.direct_bpp,
+                        self.direct_fmt,
+                        WIDTH,
+                        HEIGHT,
+                    ));
+                }
+            }
+            return Ok(false);
+        }
+        crate::shell::direct_present::present_immediate(&mut self.canvas, WIDTH, HEIGHT)
     }
 
     pub fn paint_egui(

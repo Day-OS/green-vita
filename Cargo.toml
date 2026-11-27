@@ -1,6 +1,6 @@
 [package]
 name = "green-vita"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 
 [dependencies]
@@ -25,7 +25,7 @@ tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 unic-langid = "0.9"
 uuid = { version = "1", features = ["v4", "serde"] }
 vita-newlib-shims = "0.3"
-vitasdk-sys = { version = "0.3", features = ["SceAppUtil_stub", "SceCtrl_stub", "SceKernelDmacMgr_stub", "SceKernelThreadMgr_stub", "SceLibKernel_stub", "SceNetCtl_stub", "ScePower_stub", "SceProcessmgr_stub", "SceShellSvc_stub", "SceVideodec_stub", "SceSysmem_stub", "SceSysmodule_stub"] }
+vitasdk-sys = { version = "0.3", features = ["SceAppUtil_stub", "SceCtrl_stub", "SceDisplay_stub", "SceKernelDmacMgr_stub", "SceKernelThreadMgr_stub", "SceLibKernel_stub", "SceNetCtl_stub", "ScePower_stub", "SceProcessmgr_stub", "SceShellSvc_stub", "SceVideodec_stub", "SceSysmem_stub", "SceSysmodule_stub"] }
 
 [patch.crates-io]
 ring = { git = "https://github.com/vita-rust/ring.git", branch = "v0.17.14-vita" }

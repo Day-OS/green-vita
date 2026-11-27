@@ -12,13 +12,19 @@ const AVATAR_KEY: &str = "__avatar__";
 impl App {
     pub(super) fn load_credentials(&mut self) {
         let mut auth = self.service.auth.clone();
+        let region_bypass_ip = self.settings.active_region_bypass_ip();
+        self.region_bypass_changed = false;
         self.set_state(AppState::LoadingCredentials(tokio::spawn(async move {
-            let credentials = match auth.fetch_streaming_credentials().await {
+            let credentials = match auth
+                .fetch_streaming_credentials(region_bypass_ip.as_deref())
+                .await
+            {
                 Ok(credentials) => credentials,
                 Err(error) => {
                     return Ok(CredentialsLoadResult {
                         result: Err(error),
                         auth,
+                        region_bypass_ip,
                     });
                 }
             };
@@ -33,6 +39,7 @@ impl App {
             Ok(CredentialsLoadResult {
                 result: Ok((credentials, profile)),
                 auth,
+                region_bypass_ip,
             })
         })));
     }
@@ -150,7 +157,15 @@ impl App {
             PollJob::Done(Ok(CredentialsLoadResult {
                 result: Ok((credentials, profile)),
                 auth,
+                region_bypass_ip,
             })) => {
+                // a bypass IP worked if xCloud handed out a cloud region with it
+                if let Some(ip) = region_bypass_ip
+                    && !credentials.cloud.host.is_empty()
+                {
+                    self.settings.remember_region_bypass_ip(&ip);
+                    self.settings.save();
+                }
                 self.service.api.config.home = credentials.home;
                 self.service.api.config.cloud = credentials.cloud;
                 self.service.api.config.cloud_f2p = credentials.cloud_f2p;
@@ -178,6 +193,7 @@ impl App {
             PollJob::Done(Ok(CredentialsLoadResult {
                 result: Err(error),
                 auth,
+                ..
             })) => {
                 self.service.auth = auth;
                 eprintln!("Xbox sign-in failed: {error:#}");

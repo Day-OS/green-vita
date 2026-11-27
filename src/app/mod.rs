@@ -42,10 +42,29 @@ pub struct App {
     pub(crate) cap_advice: Option<crate::shell::netprobe::ProbeResult>,
     pub(crate) cap_advice_dismissed: bool,
     pub(crate) title_search_query: String,
-    pub(crate) title_search_requested: bool,
+    /// Set by a screen that wants the Vita on-screen keyboard; the shell opens it
+    /// and routes the confirmed text back via [`App::submit_ime_text`].
+    pub(crate) ime_request: Option<ImeTarget>,
+    /// The region bypass was changed since the last sign-in; credentials are
+    /// re-fetched when leaving Settings to a screen where that is safe.
+    pub(crate) region_bypass_changed: bool,
+}
+
+/// What text the Vita on-screen keyboard is collecting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImeTarget {
+    TitleSearch,
+    RegionBypassIp,
 }
 
 impl App {
+    pub(crate) fn submit_ime_text(&mut self, target: ImeTarget, text: String) {
+        match target {
+            ImeTarget::TitleSearch => self.set_title_search_query(text),
+            ImeTarget::RegionBypassIp => self.set_region_bypass_ip_from_input(&text),
+        }
+    }
+
     /// Phase 1 network validation (TODO 7a): the state to enter after any
     /// sign-in entry point. Offline Wi-Fi ⇒ the existing Error screen with
     /// `retry_sign_in` — retry re-runs this gate, so coming back online
@@ -74,7 +93,8 @@ impl App {
             menu: MenuState::default(),
             title_initial_overlay: None,
             title_search_query: String::new(),
-            title_search_requested: false,
+            ime_request: None,
+            region_bypass_changed: false,
             cap_probe: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cap_advice: None,
             cap_advice_dismissed: false,

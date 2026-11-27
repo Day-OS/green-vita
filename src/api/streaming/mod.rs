@@ -30,7 +30,6 @@ impl PlaybackBackend {
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
         color_profile: ColorProfile,
-        periodic_keyframe: bool,
     ) -> Result<Self> {
         Ok(Self::Xbox(XboxStreamingBackend::start(
             stream,
@@ -38,7 +37,6 @@ impl PlaybackBackend {
             video_bitrate_kbps,
             video_h264_profile,
             color_profile,
-            periodic_keyframe,
         )?))
     }
 

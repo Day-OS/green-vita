@@ -103,7 +103,16 @@ impl DecodeScheduler {
     /// Post-decode yield. `queue_depth` = AUs still queued when this frame finished decoding.
     pub fn yield_after_decode(&self, queue_depth: usize) -> Duration {
         match self.mode {
-            SchedulerMode::DisplayClocked => Duration::from_millis(13),
+            // Stage 6 / latency (2026-11-26): 13 ms was the f1bf114 known-good
+            // default, but it is a second, avoidable buffer on top of the ring
+            // gate (lock_decode_target already waits for a free display slot).
+            // The 2026-11-26 end-to-end measurement (button -> local square ->
+            // streamed hover) was 190-220 ms; the client share is ~27 ms, of
+            // which this sleep is 13. 2 ms keeps the decoder paced (the rule
+            // that prevents hw_buffered accumulation is "not zero") while
+            // returning ~11 ms. The scratch/retire path is still paced by the
+            // same call, so it cannot free-run.
+            SchedulerMode::DisplayClocked => Duration::from_millis(2),
 
             SchedulerMode::Paced => {
                 const TABLE: [u64; 7] = [13, 13, 11, 10, 9, 8, 7];

@@ -1,7 +1,7 @@
 # HUD Reference
 
 **Source**: `src/app/ui/screens/streaming.rs:build_debug_rows()` and `src/streaming/video/metrics.rs:video_performance_summary()`.
-**Total HUD fields**: 35. These are the fields displayed in the two-column debug overlay on the Vita, and the multi-line summary in the performance stats.
+**Total HUD fields**: 41 (35 + six performance-plan probes added 2026-11-24: `RxCPU`, `UIloop`, `UIwork`, `KfReq`, `IDR`, `RxdMax`). These are the fields displayed in the two-column debug overlay on the Vita, and the multi-line summary in the performance stats.
 **Style**: Left-column fields (left half of overlay) + right-column fields (right half). Panel height adapts to the taller column.
 
 | Field | Type/Units | Meaning | "Bad" Looks Like |
@@ -41,6 +41,12 @@
 | `md` | `i64` (count) | Slice/header match metric (`sh_match`) — *uncertain mapping*. | Mismatch = slice header inconsistency; bitstream corruption. |
 | `pick` | `i64` µs | Display pickup us (`display_pickup_us`). | High values = display lag; A/V desynchronization. |
 | `pickMax` | `i64` µs | Maximum display_pickup_us observed this session. | Large max = worst-case display delay event. |
+| `RxCPU` | `i64` ms | RTC-thread time in the WebRTC read path during the last second (`rtc_cpu_us / 1000`). | A large fraction of a second = the RTC thread is CPU-bound. |
+| `UIloop` | `i64` ms | Last UI-loop period (`ui_loop_us / 1000`). | Not ~17 ms, or jumpy = loop is timer-paced, not vblank-locked. |
+| `UIwork` | `i64` ms | Last UI-loop work time, iteration start to after present (`ui_work_us / 1000`). | Close to the loop period = no headroom. |
+| `KfReq` | `i64` (count) | Keyframe requests sent in the last second (`kf_req`). | Many per second = keyframe storms. |
+| `IDR` | `i64` KB | Keyframe bytes submitted in the last second (`idr_bytes / 1024`). | Large = bitrate spent on keyframes. |
+| `RxdMax` | `i64` (count) | Largest datagram batch the receive thread drained at once in the last second (`rx_drain_max`). | Large = packets pile up faster than they are drained. |
 
 ## Uncertain HUD Field Mappings
 

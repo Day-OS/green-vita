@@ -50,10 +50,10 @@ mod tests {
     }
 
     #[test]
-    fn yield_displayclocked_13ms_depth0_and_5() {
+    fn yield_displayclocked_2ms_depth0_and_5() {
         let sched = DecodeScheduler::new(SchedulerMode::DisplayClocked);
-        assert_eq!(sched.yield_after_decode(0), Duration::from_millis(13));
-        assert_eq!(sched.yield_after_decode(5), Duration::from_millis(13));
+        assert_eq!(sched.yield_after_decode(0), Duration::from_millis(2));
+        assert_eq!(sched.yield_after_decode(5), Duration::from_millis(2));
     }
 
     #[test]

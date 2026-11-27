@@ -732,6 +732,12 @@ impl VideoReceiver {
         }
 
         // Publish TWCC per-interval delay summary (median and max us) once per second.
+        // 0 unless the manual-TWCC switch is on: we are the RECEIVER, so we
+        // only ever SEND TWCC feedback, and the recorder is fed per packet
+        // only behind MANUAL_TWCC (default off). The console sends us no
+        // transport-wide feedback. Do not read these columns as network
+        // jitter — rx_gap_max_us / rtp_assembly_* / capture_to_arrival_us
+        // cover that.
         let (twcc_delay_med_us, twcc_delay_max_us) =
             self.rtp.twcc_recorder.take_delay_summary_us();
         METRICS.twcc_delay_med_us.store(twcc_delay_med_us, Ordering::Relaxed);
@@ -750,47 +756,24 @@ impl VideoReceiver {
             self.remb_effective_bps = remb_descent(self.remb_effective_bps, rate);
         }
 
-        // Compute SR-anchored absolute latency metrics once per second.
-        // Requires: SR anchor exists, NTP > 0, and newest received RTP timestamp available.
+        // SR-anchored absolute latency is NOT measurable in this fork: the
+        // console SRTCP-encrypts the sender-report body (see the census
+        // comment in transport.rs), so the NTP / RTP-timestamp anchor inside
+        // an SR cannot be read without the crate-internal SRTCP key.
+        // `sr_clock_offset_ms` and `sr_anchor_ntp` / `sr_anchor_rtp` therefore
+        // stay 0 by construction. What IS locally measurable is how long ago
+        // the last SR arrived: a stalled SR flow (age climbing past a few
+        // seconds) invalidates any console-clock reasoning and is visible in
+        // the CSV. AU-level one-way delay (no clock sync needed) is computed
+        // in rtp.rs and lands in capture_to_arrival_us.
         {
             use crate::streaming::video::metrics::METRICS;
             use std::sync::atomic::Ordering;
-            let sr_anchor_ntp = METRICS.sr_anchor_ntp.load(Ordering::Relaxed);
-            let sr_anchor_rtp_ts = METRICS.sr_anchor_rtp_ts.load(Ordering::Relaxed);
-            let sr_anchor_local_us = METRICS.sr_anchor_local_us.load(Ordering::Relaxed);
-            let sr_anchor_local_wall_us = METRICS.sr_anchor_local_wall_us.load(Ordering::Relaxed);
-            let newest_received_ts = self.rtp.newest_received_ts;
 
-            if sr_anchor_ntp > 0 && sr_anchor_local_us > 0 && sr_anchor_local_wall_us > 0
-                && newest_received_ts.is_some()
-            {
-                let sr_anchor_ntp_ms = sr_anchor_ntp as u64;
-                // Age of the SR anchor in milliseconds
-                let sr_age_ms = ((PROCESS_START.elapsed().as_micros() as u64 - sr_anchor_local_us) / 1000) as i64;
-                // Console unix ms minus client wall ms: alignment offset
-                let sr_clock_offset_ms = (sr_anchor_ntp_ms - 2_208_988_800_000) as i64
-                    - (sr_anchor_local_wall_us / 1000) as i64;
-                // RTP timestamp delta from SR anchor (90 kHz clock)
-                let newest_rtp_ts = newest_received_ts.unwrap() as u32;
-                let delta_ts = newest_rtp_ts.wrapping_sub(sr_anchor_rtp_ts as u32);
-                // Guard against stale anchor or wrap: >10s delta is invalid
-                if delta_ts <= 900_000 {
-                    // Console media time in microseconds:
-                    //   (NTP unix ms) * 1000 + (RTP delta * 1_000_000 / 90_000)
-                    let console_media_unix_us = (sr_anchor_ntp_ms as i64 - 2_208_988_800_000) * 1000
-                        + delta_ts as i64 * 1_000_000 / 90_000;
-                    // Now wall at "now", extrapolated from SR arrival
-                    let now_wall_us = sr_anchor_local_wall_us
-                        + (PROCESS_START.elapsed().as_micros() as u64 - sr_anchor_local_us);
-                    let capture_to_arrival_us = now_wall_us as i64 - console_media_unix_us;
-
-                    // Store per-second metrics
-                    METRICS.capture_to_arrival_us.store(capture_to_arrival_us, Ordering::Relaxed);
-                    METRICS.capture_to_arrival_max_us.store(capture_to_arrival_us, Ordering::Relaxed);
-                    METRICS.sr_age_ms.store(sr_age_ms, Ordering::Relaxed);
-                    METRICS.sr_clock_offset_ms.store(sr_clock_offset_ms, Ordering::Relaxed);
-                }
-            }
+            // No SR anchor timestamps are available in this fork: SRTCP encrypts
+            // the sender-report body, so NTP/RTP-timestamp anchors inside an SR
+            // cannot be read without the crate-internal SRTCP key. Only local elapsed
+            // time since the last SR arrival is measured via PROCESS_START.
         }
 
         let encoded_resolution = self

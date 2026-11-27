@@ -1,8 +1,12 @@
-//! Streaming power profile: raises CPU/GPU clocks, enables wireless
-//! performance mode, and keeps auto-suspend/screen-off at bay while the app
-//! runs. Mirrors the clock profile vita-moonlight-relay validated for smooth
-//! streaming (ARM 444 / BUS 222 / GPU 222 / GPU-XBAR 166 MHz + wireless mode
-//! + a 10 s power-tick heartbeat); previous values are restored on drop.
+//! Streaming power profile: raises the CPU and memory-bus clocks and keeps
+//! auto-suspend/screen-off at bay while the app runs. The previous values are
+//! restored on drop.
+//!
+//! Stage 5a (2026-11-27): CPU + memory bus only. The GPU/xbar are left at the
+//! OS default (the GPU is not the bottleneck: one blit + a few HUD quads), and
+//! Wi-Fi is owned by TurboWifi, so `SetUsingWireless` is not called. An
+//! external overclock plugin may already set these; the SDK calls are
+//! idempotent.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,14 +23,12 @@ use vitasdk_sys::{
 
 const ARM_CLOCK_MHZ: i32 = 444;
 const BUS_CLOCK_MHZ: i32 = 222;
-const GPU_CLOCK_MHZ: i32 = 222;
-const GPU_XBAR_CLOCK_MHZ: i32 = 166;
 const POWER_TICK_INTERVAL: Duration = Duration::from_secs(10);
 const POWER_TICK_MASK: u32 =
     (SCE_KERNEL_POWER_TICK_DISABLE_AUTO_SUSPEND | SCE_KERNEL_POWER_TICK_DISABLE_OLED_OFF) as u32;
 
-/// Disabled: clock/wireless overrides regressed drift during testing.
-pub(crate) const ENABLED: bool = false;
+/// Stage 5a: CPU + memory bus overclock, engaged while streaming.
+pub(crate) const ENABLED: bool = true;
 
 struct SavedClocks {
     arm: i32,
@@ -68,9 +70,17 @@ pub fn engage() -> StreamingPowerGuard {
     unsafe {
         let _ = scePowerSetArmClockFrequency(ARM_CLOCK_MHZ);
         let _ = scePowerSetBusClockFrequency(BUS_CLOCK_MHZ);
-        let _ = scePowerSetGpuClockFrequency(GPU_CLOCK_MHZ);
-        let _ = scePowerSetGpuXbarClockFrequency(GPU_XBAR_CLOCK_MHZ);
-        let _ = scePowerSetUsingWireless(1);
+        // Stage 5a: GPU/xbar left at the OS default; Wi-Fi owned by TurboWifi.
+        // Read back and record the real clocks (the CSV column was never
+        // written before, so 333 vs 444 could not be verified).
+        let arm = unsafe { scePowerGetArmClockFrequency() };
+        let bus = unsafe { scePowerGetBusClockFrequency() };
+        crate::streaming::video::metrics::METRICS
+            .clk_arm_mhz
+            .store(arm.max(0) as u64, Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .clk_bus_mhz
+            .store(bus.max(0) as u64, Ordering::Relaxed);
     }
     eprintln!(
         "streaming power profile engaged (was arm:{} bus:{} gpu:{} xbar:{} wireless:{})",

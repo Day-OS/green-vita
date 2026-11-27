@@ -4,7 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
-use crate::settings::{ColorProfile, H264Profile, StreamDebugMode};
+use crate::settings::{ColorProfile, H264Profile, RepairWindow, StreamDebugMode, parse_region_bypass_ip};
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -27,12 +27,14 @@ pub enum Command {
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
     SetDamagePolicy(crate::settings::DamagePolicy),
-    SetManualTwcc(bool),
+    SetRepairWindow(crate::settings::RepairWindow),
     SetLatencyProfile(crate::settings::LatencyProfile),
     SetColorProfile(crate::settings::ColorProfile),
-    SetPeriodicKeyframe(bool),
+    SetDirectPresent(bool),
     SetLatencyTestMode(bool),
     SetPsButtonCapture(bool),
+    SetRegionBypassIp(Option<String>),
+    EnterRegionBypassIp,
 }
 
 #[derive(Clone)]
@@ -47,12 +49,14 @@ enum SettingsRow {
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
     DamagePolicy(crate::settings::DamagePolicy),
-    ManualTwcc(bool),
+    RepairWindow(crate::settings::RepairWindow),
     LatencyProfile(crate::settings::LatencyProfile),
     ColorProfile(crate::settings::ColorProfile),
-    PeriodicKeyframe(bool),
+    DirectPresent(bool),
     LatencyTest(bool),
     PsButtonCapture(bool),
+    RegionBypass,
+    RegionBypassEnterIp,
     Back,
 }
 
@@ -98,16 +102,21 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     if title_id.is_none() {
         rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
     }
-    rows.push(SettingsRow::StreamDebug(app.settings.stream_debug_mode));
-    rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
+    rows.push(SettingsRow::PsButtonCapture(app.settings.ps_button_capture));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
-    rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
-    rows.push(SettingsRow::ManualTwcc(app.settings.manual_twcc_60ms));
-    rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
     rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
-    rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
-    rows.push(SettingsRow::PsButtonCapture(app.settings.ps_button_capture));
+    rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
+    rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
+    rows.push(SettingsRow::RepairWindow(app.settings.repair_window));
+    rows.push(SettingsRow::DirectPresent(app.settings.direct_present));
+    rows.push(SettingsRow::StreamDebug(app.settings.stream_debug_mode));
+    rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
+    // 0.4.0 networking settings stay last (user request).
+    if title_id.is_none() {
+        rows.push(SettingsRow::RegionBypass);
+        rows.push(SettingsRow::RegionBypassEnterIp);
+    }
     rows.push(SettingsRow::Back);
     rows
 }
@@ -272,34 +281,18 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
-                {
-                    let label = format!(
-                        "Debug: {}",
-                        match app.settings.stream_debug_mode {
-                            StreamDebugMode::Off => "Off",
-                            StreamDebugMode::Minimal => "FPS+Bitrate",
-                            StreamDebugMode::Full => "Full",
-                        }
-                    );
-                    if focus_row(ui, selected_index == row_index, label) {
-                        let next = match app.settings.stream_debug_mode {
-                            StreamDebugMode::Off => StreamDebugMode::Minimal,
-                            StreamDebugMode::Minimal => StreamDebugMode::Full,
-                            StreamDebugMode::Full => StreamDebugMode::Off,
-                        };
-                        commands.push(Command::SetStreamDebugMode(next).into());
-                    }
-                }
-                row_index += 1;
-
+                ui.heading(
+                    egui::RichText::new(i18n.text("settings-instream-controls"))
+                        .color(theme.text_bright),
+                );
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
-                    app.settings.latency_test_mode,
-                    i18n.text("settings-latency-test"),
+                    app.settings.ps_button_capture,
+                    i18n.text("settings-ps-button-capture"),
                 ) {
                     commands.push(
-                        Command::SetLatencyTestMode(!app.settings.latency_test_mode).into(),
+                        Command::SetPsButtonCapture(!app.settings.ps_button_capture).into(),
                     );
                 }
                 row_index += 1;
@@ -344,46 +337,24 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 ui.add_space(14.0);
                 ui.separator();
                 {
-                    let label = format!(
-                        "Damage policy: {}",
-                        match app.settings.damage_policy {
-                            crate::settings::DamagePolicy::LowLatency => "Low latency",
-                            crate::settings::DamagePolicy::Balanced => "Balanced",
-                            crate::settings::DamagePolicy::Quality => "Quality",
-                        }
+                    let mut args = FluentArgs::new();
+                    args.set(
+                        "mode",
+                        arg_string(match app.settings.color_profile {
+                            ColorProfile::Rgb565 => "RGB565",
+                            ColorProfile::Rgba8888 => "RGBA8888",
+                        }),
                     );
-                    if focus_row(ui, selected_index == row_index, &label) {
-                        let next = match app.settings.damage_policy {
-                            crate::settings::DamagePolicy::LowLatency => {
-                                crate::settings::DamagePolicy::Balanced
-                            }
-                            crate::settings::DamagePolicy::Balanced => {
-                                crate::settings::DamagePolicy::Quality
-                            }
-                            crate::settings::DamagePolicy::Quality => {
-                                crate::settings::DamagePolicy::LowLatency
-                            }
+                    let label = i18n.text_with("settings-color-profile", args);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.color_profile {
+                            ColorProfile::Rgb565 => ColorProfile::Rgba8888,
+                            ColorProfile::Rgba8888 => ColorProfile::Rgb565,
                         };
-                        commands.push(Command::SetDamagePolicy(next).into());
+                        commands.push(Command::SetColorProfile(next).into());
                     }
                 }
                 row_index += 1;
-
-                ui.add_space(14.0);
-                ui.separator();
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.manual_twcc_60ms,
-                    i18n.text("settings-manual-twcc"),
-                ) {
-                    commands.push(Command::SetManualTwcc(!app.settings.manual_twcc_60ms).into());
-                }
-                row_index += 1;
-                ui.colored_label(
-                    theme.text,
-                    egui::RichText::new(i18n.text("settings-manual-twcc-sub")).size(14.0),
-                );
 
                 ui.add_space(14.0);
                 ui.separator();
@@ -412,24 +383,59 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 ui.add_space(14.0);
                 ui.separator();
                 {
-                    // Hardware decoder output profile (TODO item 3). Takes effect
-                    // on the next stream start — no live atomic: the decoder
-                    // output format is fixed at decoder construction.
-                    let mut args = FluentArgs::new();
-                    args.set(
-                        "mode",
-                        arg_string(match app.settings.color_profile {
-                            ColorProfile::Rgb565 => "RGB565",
-                            ColorProfile::Rgba8888 => "RGBA8888",
-                        }),
+                    let label = format!(
+                        "Damage policy: {}",
+                        match app.settings.damage_policy {
+                            crate::settings::DamagePolicy::LowLatency => "Low latency",
+                            crate::settings::DamagePolicy::Balanced => "Balanced",
+                            crate::settings::DamagePolicy::Quality => "Quality",
+                        }
                     );
-                    let label = i18n.text_with("settings-color-profile", args);
-                    if focus_row(ui, selected_index == row_index, label) {
-                        let next = match app.settings.color_profile {
-                            ColorProfile::Rgb565 => ColorProfile::Rgba8888,
-                            ColorProfile::Rgba8888 => ColorProfile::Rgb565,
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.damage_policy {
+                            crate::settings::DamagePolicy::LowLatency => {
+                                crate::settings::DamagePolicy::Balanced
+                            }
+                            crate::settings::DamagePolicy::Balanced => {
+                                crate::settings::DamagePolicy::Quality
+                            }
+                            crate::settings::DamagePolicy::Quality => {
+                                crate::settings::DamagePolicy::LowLatency
+                            }
                         };
-                        commands.push(Command::SetColorProfile(next).into());
+                        commands.push(Command::SetDamagePolicy(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let label = format!(
+                        "Repair window: {}",
+                        match app.settings.repair_window {
+                            crate::settings::RepairWindow::Off => "Off",
+                            crate::settings::RepairWindow::Short => "Short",
+                            crate::settings::RepairWindow::Balanced => "Balanced",
+                            crate::settings::RepairWindow::Patient => "Patient",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.repair_window {
+                            crate::settings::RepairWindow::Off => {
+                                crate::settings::RepairWindow::Short
+                            }
+                            crate::settings::RepairWindow::Short => {
+                                crate::settings::RepairWindow::Balanced
+                            }
+                            crate::settings::RepairWindow::Balanced => {
+                                crate::settings::RepairWindow::Patient
+                            }
+                            crate::settings::RepairWindow::Patient => {
+                                crate::settings::RepairWindow::Off
+                            }
+                        };
+                        commands.push(Command::SetRepairWindow(next).into());
                     }
                 }
                 row_index += 1;
@@ -439,35 +445,123 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
-                    app.settings.periodic_keyframe,
-                    i18n.text("settings-periodic-keyframe"),
+                    app.settings.direct_present,
+                    i18n.text("settings-direct-present"),
                 ) {
                     commands
-                        .push(Command::SetPeriodicKeyframe(!app.settings.periodic_keyframe).into());
+                        .push(Command::SetDirectPresent(!app.settings.direct_present).into());
                 }
                 row_index += 1;
 
                 ui.add_space(14.0);
                 ui.separator();
-                ui.heading(
-                    egui::RichText::new(i18n.text("settings-instream-controls"))
-                        .color(theme.text_bright),
-                );
+                {
+                    let label = format!(
+                        "Debug: {}",
+                        match app.settings.stream_debug_mode {
+                            StreamDebugMode::Off => "Off",
+                            StreamDebugMode::Minimal => "FPS+Bitrate",
+                            StreamDebugMode::Full => "Full",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.stream_debug_mode {
+                            StreamDebugMode::Off => StreamDebugMode::Minimal,
+                            StreamDebugMode::Minimal => StreamDebugMode::Full,
+                            StreamDebugMode::Full => StreamDebugMode::Off,
+                        };
+                        commands.push(Command::SetStreamDebugMode(next).into());
+                    }
+                }
+                row_index += 1;
+
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
-                    app.settings.ps_button_capture,
-                    i18n.text("settings-ps-button-capture"),
+                    app.settings.latency_test_mode,
+                    i18n.text("settings-latency-test"),
                 ) {
                     commands.push(
-                        Command::SetPsButtonCapture(!app.settings.ps_button_capture).into(),
+                        Command::SetLatencyTestMode(!app.settings.latency_test_mode).into(),
                     );
                 }
                 row_index += 1;
-                ui.colored_label(
-                    theme.text,
-                    egui::RichText::new(i18n.text("settings-ps-button-capture-sub")).size(14.0),
+
+                // 0.4.0 networking settings (last, per user request).
+                if title_id.is_none() {
+                    ui.add_space(14.0);
+                    ui.separator();
+                    let label = match app.settings.active_region_bypass_ip().as_deref() {
+                        Some(ip) => {
+                            let mut args = FluentArgs::new();
+                            args.set("ip", arg_string(ip));
+                            i18n.text_with("settings-region-bypass-ip", args)
+                        }
+                        None => i18n.text("settings-region-bypass-off"),
+                    };
+                    if focus_row(ui, selected_index == row_index, label) {
+                        commands.push(
+                            Command::SetRegionBypassIp(app.settings.next_region_bypass_choice())
+                                .into(),
+                        );
+                    }
+                    row_index += 1;
+
+                    if focus_row(
+                        ui,
+                        selected_index == row_index,
+                        i18n.text("settings-region-bypass-enter-ip"),
+                    ) {
+                        commands.push(Command::EnterRegionBypassIp.into());
+                    }
+                    row_index += 1;
+
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(i18n.text("settings-region-bypass-warning"))
+                                .size(14.0)
+                                .color(theme.text),
+                        )
+                        .wrap(),
+                    );
+                    if app.region_bypass_changed {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(
+                                    i18n.text("settings-region-bypass-pending"),
+                                )
+                                .size(14.0)
+                                .color(theme.accent),
+                            )
+                            .wrap(),
+                        );
+                    }
+                }
+
+                // Descriptions (read-only, at the bottom).
+                ui.add_space(14.0);
+                ui.separator();
+                ui.heading(
+                    egui::RichText::new(i18n.text("settings-help")).color(theme.text_bright),
                 );
+                for key in [
+                    "settings-swap-shoulders-triggers",
+                    "settings-ps-button-capture-sub",
+                    "settings-bitrate",
+                    "settings-color-profile",
+                    "settings-direct-present-sub",
+                    "settings-latency-profile",
+                    "settings-damage-policy",
+                    "settings-repair-window",
+                    "settings-debug-modes",
+                    "settings-latency-test",
+                ] {
+                    ui.colored_label(
+                        theme.text,
+                        egui::RichText::new(i18n.text(key)).size(14.0),
+                    );
+                    ui.add_space(6.0);
+                }
 
                 ui.add_space(14.0);
                 ui.separator();
@@ -669,6 +763,13 @@ impl App {
             SettingsRow::LatencyTest(enabled) => {
                 return self.handle_settings_command(Command::SetLatencyTestMode(!enabled));
             }
+            SettingsRow::RegionBypass => {
+                let next = self.settings.next_region_bypass_choice();
+                return self.handle_settings_command(Command::SetRegionBypassIp(next));
+            }
+            SettingsRow::RegionBypassEnterIp => {
+                return self.handle_settings_command(Command::EnterRegionBypassIp);
+            }
             SettingsRow::VideoBitrateCap(current) => {
                 return self.handle_settings_command(Command::SetVideoBitrateCap(
                     next_bitrate_preset(*current),
@@ -695,8 +796,22 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetDamagePolicy(next));
             }
-            SettingsRow::ManualTwcc(enabled) => {
-                return self.handle_settings_command(Command::SetManualTwcc(!enabled));
+            SettingsRow::RepairWindow(policy) => {
+                let next = match policy {
+                    crate::settings::RepairWindow::Off => {
+                        crate::settings::RepairWindow::Short
+                    }
+                    crate::settings::RepairWindow::Short => {
+                        crate::settings::RepairWindow::Balanced
+                    }
+                    crate::settings::RepairWindow::Balanced => {
+                        crate::settings::RepairWindow::Patient
+                    }
+                    crate::settings::RepairWindow::Patient => {
+                        crate::settings::RepairWindow::Off
+                    }
+                };
+                return self.handle_settings_command(Command::SetRepairWindow(next));
             }
             SettingsRow::LatencyProfile(profile) => {
                 let next = match profile {
@@ -716,8 +831,8 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetColorProfile(next));
             }
-            SettingsRow::PeriodicKeyframe(enabled) => {
-                return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
+            SettingsRow::DirectPresent(enabled) => {
+                return self.handle_settings_command(Command::SetDirectPresent(!enabled));
             }
             SettingsRow::PsButtonCapture(enabled) => {
                 return self.handle_settings_command(Command::SetPsButtonCapture(!enabled));
@@ -732,7 +847,23 @@ impl App {
     fn leave_settings(&mut self) {
         let state = std::mem::replace(&mut self.state, AppState::TitleList { selected: 0 });
         if let AppState::Settings { return_to, .. } = state {
-            self.set_state(*return_to);
+            // streaming tokens are issued at sign-in
+            let safe_to_refresh = matches!(
+                *return_to,
+                AppState::ModeSelect { .. }
+                    | AppState::TitleList { .. }
+                    | AppState::ConsoleList { .. }
+                    | AppState::Error {
+                        retry_sign_in: true,
+                        ..
+                    }
+            );
+            if self.region_bypass_changed && safe_to_refresh && self.service.auth.has_saved_login()
+            {
+                self.load_credentials();
+            } else {
+                self.set_state(*return_to);
+            }
         } else {
             self.state = state;
         }
@@ -838,14 +969,10 @@ impl App {
                     std::sync::atomic::Ordering::Relaxed,
                 );
             }
-            Command::SetManualTwcc(enabled) => {
-                self.settings.manual_twcc_60ms = enabled;
+            Command::SetRepairWindow(policy) => {
+                self.settings.repair_window = policy;
                 self.settings.save();
-                // NOT live — applies at next stream start (connection.rs
-                // re-stores the atomic per session). Toggling mid-stream
-                // punches a hole in the console's transport-wide sequence
-                // view: it reads the gap as catastrophic loss and clamps to
-                // a few fps until reconnect (device-observed 2026-11-10).
+                // Live: the assembler reads this per damage event from the atomic.
             }
             Command::SetLatencyProfile(profile) => {
                 self.settings.latency_profile = profile;
@@ -860,23 +987,54 @@ impl App {
                     std::sync::atomic::Ordering::Relaxed,
                 );
             }
+            Command::SetDirectPresent(enabled) => {
+                self.settings.direct_present = enabled;
+                self.settings.save();
+                // Applies at the next stream start (connection.rs stores
+                // DIRECT_MODE per session).
+            }
             Command::SetColorProfile(profile) => {
                 // No live store: the decoder output format is fixed at decoder
                 // construction, so this applies at the next stream start.
                 self.settings.color_profile = profile;
                 self.settings.save();
             }
-            Command::SetPeriodicKeyframe(enabled) => {
-                self.settings.periodic_keyframe = enabled;
-                self.settings.save();
-            }
             Command::SetPsButtonCapture(enabled) => {
                 self.settings.ps_button_capture = enabled;
                 self.settings.save();
             }
+            Command::SetRegionBypassIp(ip) => {
+                let before = self.settings.active_region_bypass_ip();
+                self.settings.region_bypass_ip = ip;
+                self.settings.save();
+                self.note_region_bypass_change(before);
+            }
+            Command::EnterRegionBypassIp => {
+                self.ime_request = Some(crate::app::ImeTarget::RegionBypassIp);
+            }
         }
 
         Ok(())
+    }
+
+    /// Text from the on-screen keyboard for the bypass IP. A valid IP becomes the
+    /// active one; empty input turns the bypass off; anything else is ignored.
+    pub(crate) fn set_region_bypass_ip_from_input(&mut self, text: &str) {
+        let ip = if text.trim().is_empty() {
+            None
+        } else if let Some(ip) = parse_region_bypass_ip(text) {
+            Some(ip)
+        } else {
+            eprintln!("Settings: ignoring invalid region bypass IP {text:?}");
+            return;
+        };
+        let _ = self.handle_settings_command(Command::SetRegionBypassIp(ip));
+    }
+
+    fn note_region_bypass_change(&mut self, before: Option<String>) {
+        if self.settings.active_region_bypass_ip() != before {
+            self.region_bypass_changed = true;
+        }
     }
 
     pub(crate) fn set_locale(&mut self, locale: Locale) {

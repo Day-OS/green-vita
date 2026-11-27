@@ -98,8 +98,8 @@ impl Locale {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum H264Profile {
     #[default]
-    Baseline,
     Main,
+    Baseline,
 }
 
 /// Mini debug mode: bitrate/bandwidth + displayed FPS only, white text on semi-transparent dark rectangle, TOP-RIGHT corner.
@@ -133,6 +133,32 @@ pub enum DamagePolicy {
     Quality,
 }
 
+/// Repair-window policy (perf plan 2026-11-25): how long the assembler may
+/// hold the reference chain on a damaged AU while RTX retransmissions fill
+/// its holes. A park avoids a PLI/IDR and persistent artefacts at the cost of
+/// a bounded chain freeze (the screen holds the last good picture); the
+/// follow-up frames are decoded in order after the fill, so nothing stale is
+/// ever published. Presets map to the RepairPolicy table in assembler.rs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RepairWindow {
+    /// No park: damage resolves immediately (no RTX repair window).
+    ///
+    /// Default since 2026-11-26: the park holds the whole queue for the
+    /// window, so Balanced (40 ms) and Patient (60 ms) produced visible
+    /// freezes on every damaged AU (user: "Repair window Off - no freezes;
+    /// Balanced - many; Patient - a lot, unplayable"). Repair quality is
+    /// better with a window, but playability wins by default; the setting
+    /// remains for quality-first sessions.
+    #[default]
+    Off,
+    /// 17 ms park — tightest chain hold; loses fills that land later.
+    Short,
+    /// 40 ms park — the pre-2026-11-25 fixed budget.
+    Balanced,
+    /// 60 ms park — longest chain hold, highest fill rate.
+    Patient,
+}
+
 /// Hardware decoder output color profile. RGB565 (default) halves the
 /// decoder-to-texture CDRAM traffic vs RGBA8888; RGBA8888 (TODO item 3) is the
 /// optional quality mode that eliminates RGB565 dark-scene banding ("reads as
@@ -143,16 +169,19 @@ pub enum DamagePolicy {
 /// identical; only local memory traffic differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ColorProfile {
-    /// Hardware RGB565 direct decode (default; lowest memory bandwidth).
-    #[default]
+    /// Hardware RGB565 direct decode (half the decode→texture bandwidth).
     Rgb565,
     /// Hardware RGBA8888 direct decode — true 8-bit channels, no banding.
+    /// Default: required for direct present (the framebuffer is A8B8G8R8).
+    #[default]
     Rgba8888,
 }
 
-/// Decode-bank depth profile (item 15): Fast = shallow bank (minimal floor);
-/// Smooth = deep bank (bursts + shed stalls absorbed invisibly — the 0.3.1
-/// quality recreation, accumulation-safe by construction).
+/// Decode-bank depth profile (item 15): Fast = shallow bank (target 0,
+    /// bursts shed or conceal — minimal floor); Smooth = deep bank (target 6,
+    /// hard cap 12 ≈ +100–200 ms floor) — bursts and damage-shed stalls
+    /// absorbed invisibly (the 0.3.1 quality recreation, accumulation-safe: the
+    /// bank is hard-capped in admission and TWCC stamps pre-bank).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum LatencyProfile {
     /// Bank target 0, boost ≤2 (+33 ms worst case). Default.
@@ -160,6 +189,19 @@ pub enum LatencyProfile {
     Fast,
     /// Bank target 6, admission limit 12 (≈ +100–200 ms floor).
     Smooth,
+}
+
+/// number of remembered bypass IPs
+pub const REGION_BYPASS_HISTORY_LIMIT: usize = 5;
+
+/// returns `None` for anything that is not a valid IPv4/IPv6 address.
+pub fn parse_region_bypass_ip(input: &str) -> Option<String> {
+    input
+        .trim()
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .filter(|ip| !ip.is_unspecified() && !ip.is_loopback())
+        .map(|ip| ip.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,20 +229,26 @@ pub struct Settings {
     /// IDR on severe damage; Quality sheds on every damaged frame
     /// (artefact-free, micro-freeze per event). See DamagePolicy.
     pub damage_policy: DamagePolicy,
+    /// Repair-window policy: how long a damaged AU may be held for RTX repair
+    /// before resolving Damaged (PLI + decode-through concealment). See RepairWindow.
+    pub repair_window: RepairWindow,
     /// Manual 60ms TWCC feedback cadence (per-packet transport-wide congestion
     /// reports to the console); helps lossy links, can regress good ones.
     /// Applies live — the per-packet gate reads the atomic every packet.
+    /// Hidden (no settings row): manual 60 ms TWCC feedback. Default off — the
+    /// plan found it regresses good links (3.2x less damage on bad links, but
+    /// regressions on good ones). Toggle via settings.json or at compile time.
     pub manual_twcc_60ms: bool,
+    /// 2b: direct present (own CDRAM buffers + SetFrameBuf IMMEDIATE). Default
+    /// on. Turn OFF to use the SDL path so the debug HUD / latency square are
+    /// visible -- that adds one frame of display latency.
+    pub direct_present: bool,
     /// Decode-bank depth profile (item 15): Fast = shallow bank (target 0,
     /// bursts shed or conceal — minimal floor); Smooth = deep bank (target 6,
     /// hard cap 12 ≈ +100–200 ms floor) — bursts and damage-shed stalls
-    /// absorbed invisibly (the 0.3.1 quality recreation, accumulation-safe:
-    /// the bank is hard-capped in admission and TWCC stamps pre-bank).
+    /// absorbed invisibly (the 0.3.1 quality recreation, accumulation-safe: the bank
+    /// is hard-capped in admission and TWCC stamps pre-bank).
     pub latency_profile: LatencyProfile,
-    /// When true, a keyframe (IDR) is requested from the console every 200 ms via
-    /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
-    /// cost of slightly larger periodic frames and a small bandwidth overhead.
-    pub periodic_keyframe: bool,
     /// Hardware decoder output color profile (ColorProfile). Rgb565 default;
     /// Rgba8888 kills 565 dark-scene banding at +memory-bandwidth cost
     /// (TODO item 3). Takes effect on the next stream start.
@@ -214,6 +262,14 @@ pub struct Settings {
     /// Capture the PS button while streaming (tap = Xbox guide, hold =
     /// Vita menu passthrough); experimental.
     pub ps_button_capture: bool,
+    /// xCloud region-restriction bypass: when set,
+    /// the GSSV cloud login carries this public IP as `X-Forwarded-For`, so xCloud
+    /// treats the account as if it were in that IP's country. `None` = off (default);
+    /// opt-in only, because it spoofs the account's location.
+    pub region_bypass_ip: Option<String>,
+    /// Bypass IPs that produced a working xCloud sign-in, most recent first,
+    /// capped at [`REGION_BYPASS_HISTORY_LIMIT`].
+    pub region_bypass_history: Vec<String>,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -247,19 +303,62 @@ impl Default for Settings {
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
             damage_policy: DamagePolicy::default(),
-            manual_twcc_60ms: false,
+            repair_window: RepairWindow::default(),
             latency_profile: LatencyProfile::default(),
+            manual_twcc_60ms: false,
             color_profile: ColorProfile::default(),
-            periodic_keyframe: true,
+            direct_present: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,
             ps_button_capture: false,
+            region_bypass_ip: None,
+            region_bypass_history: Vec::new(),
             game_profiles: HashMap::new(),
         }
     }
 }
 
 impl Settings {
+    pub fn active_region_bypass_ip(&self) -> Option<String> {
+        self.region_bypass_ip
+            .as_deref()
+            .and_then(parse_region_bypass_ip)
+    }
+
+    /// Cycle order is `[Off, active, …history]`. The active slot uses
+    /// [`Self::active_region_bypass_ip`] (validated), so a hand-edited invalid
+    /// `region_bypass_ip` never enters the choices and the row label always
+    /// reflects what sign-in will actually do.
+    pub fn region_bypass_choices(&self) -> Vec<Option<String>> {
+        let mut choices = vec![None];
+        for ip in self
+            .active_region_bypass_ip()
+            .iter()
+            .chain(&self.region_bypass_history)
+        {
+            if !choices.iter().any(|c| c.as_deref() == Some(ip.as_str())) {
+                choices.push(Some(ip.clone()));
+            }
+        }
+        choices
+    }
+
+    pub fn next_region_bypass_choice(&self) -> Option<String> {
+        let choices = self.region_bypass_choices();
+        let index = choices
+            .iter()
+            .position(|c| *c == self.active_region_bypass_ip())
+            .unwrap_or(0);
+        choices[(index + 1) % choices.len()].clone()
+    }
+
+    pub fn remember_region_bypass_ip(&mut self, ip: &str) {
+        self.region_bypass_history.retain(|known| known != ip);
+        self.region_bypass_history.insert(0, ip.to_owned());
+        self.region_bypass_history
+            .truncate(REGION_BYPASS_HISTORY_LIMIT);
+    }
+
     pub fn game_profile(&self, title_id: &str) -> Option<&GameProfile> {
         self.game_profiles.get(title_id)
     }
@@ -315,5 +414,53 @@ impl Settings {
         if let Err(error) = result {
             eprintln!("Settings: failed to save: {error:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod region_bypass_tests {
+    use super::*;
+
+    #[test]
+    fn parses_and_normalises_ips() {
+        assert_eq!(parse_region_bypass_ip(" 1.2.3.4 ").as_deref(), Some("1.2.3.4"));
+        assert_eq!(parse_region_bypass_ip("2001:DB8::1").as_deref(), Some("2001:db8::1"));
+        assert_eq!(parse_region_bypass_ip("1.2.3"), None);
+        assert_eq!(parse_region_bypass_ip("0.0.0.0"), None);
+        assert_eq!(parse_region_bypass_ip("127.0.0.1"), None);
+        assert_eq!(parse_region_bypass_ip(""), None);
+    }
+
+    #[test]
+    fn cycles_off_active_then_history() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.next_region_bypass_choice(), None);
+
+        settings.region_bypass_history = vec!["1.1.1.1".into(), "2.2.2.2".into()];
+        settings.region_bypass_ip = Some("2.2.2.2".into());
+        // active IP already in history: no duplicate choice.
+        assert_eq!(settings.region_bypass_choices().len(), 3);
+        assert_eq!(settings.next_region_bypass_choice().as_deref(), Some("1.1.1.1"));
+
+        settings.region_bypass_ip = Some("1.1.1.1".into());
+        // cycle order is [Off, active, …history]: from the first IP the next is the second
+        assert_eq!(
+            settings.next_region_bypass_choice().as_deref(),
+            Some("2.2.2.2")
+        );
+        settings.region_bypass_ip = None;
+        assert_eq!(settings.next_region_bypass_choice().as_deref(), Some("1.1.1.1"));
+    }
+
+    #[test]
+    fn history_is_most_recent_first_and_capped() {
+        let mut settings = Settings::default();
+        for i in 0..7 {
+            settings.remember_region_bypass_ip(&format!("10.0.0.{i}"));
+        }
+        settings.remember_region_bypass_ip("10.0.0.4");
+        assert_eq!(settings.region_bypass_history.len(), REGION_BYPASS_HISTORY_LIMIT);
+        assert_eq!(settings.region_bypass_history[0], "10.0.0.4");
+        assert_eq!(settings.region_bypass_history[1], "10.0.0.6");
     }
 }

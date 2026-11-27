@@ -62,6 +62,13 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
         let enc = f("enc:");
         let err = f("err:");
         let cs = f("cs:");
+        let rxd = f("rxd:");
+        let rcpu = f("rcpu:");
+        let ui = f("ui:");
+        let uw = f("uw:");
+        let kf = f("kf:");
+        let idr = f("idr:");
+        let scr = f("scr:");
 
         const LABEL_WIDTH: usize = 16;
         const VALUE_WIDTH: usize = 8;
@@ -80,9 +87,12 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("SRage:{}ms", srage), format!("SRcoff:{}ms", srcoff)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Resync:{}", rs), format!("Flush:{}", fl)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("TWCC:{}", tw_s), format!("Strd:{}", st)),
-            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Pick:{}us", pick), ""),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Pick:{}us", pick), format!("RxCPU:{}ms", rcpu)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", "Decoder:avcdec", format!("Res:{}", res)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Color:{}", color_val), format!("Err:{}", err_val)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("UIloop:{}ms", ui), format!("UIwork:{}ms", uw)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("KfReq:{}", kf), format!("IDR:{}KB", idr)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("RxdMax:{}", rxd), format!("Scratch:{}", scr)),
         ];
 
         // Free any previously cached rows and store the new ones.
@@ -378,7 +388,13 @@ match app.settings.stream_debug_mode {
     }
     _ => {}
 }
-    if let Some(progress) = hold_progress {
+    // 2b: in direct mode the SDL present overwrites the framebuffer, so the
+    // hold spinner is not drawn at all (the screen stays on the video). The
+    // present still happens, so the pause menu transition is unaffected.
+    if let Some(progress) = hold_progress
+        && !crate::shell::direct_present::DIRECT_MODE
+            .load(std::sync::atomic::Ordering::Relaxed)
+    {
         egui::Area::new(egui::Id::new("pause_hold_indicator"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(16.0, 16.0))

@@ -606,7 +606,7 @@ impl App {
 
     pub(crate) fn handle_title_list_command(&mut self, command: Command) -> Result<()> {
         match command {
-            Command::OpenSearch => self.title_search_requested = true,
+            Command::OpenSearch => self.ime_request = Some(crate::app::ImeTarget::TitleSearch),
             Command::SetSearch(query) => self.set_title_search_query(query),
         }
         Ok(())
